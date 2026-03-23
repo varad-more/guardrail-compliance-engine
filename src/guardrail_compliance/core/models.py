@@ -45,6 +45,7 @@ class ResourceEvaluation:
     file_path: Path
     line_number: int | None
     normalized_text: str
+    normalized_facts: dict[str, Any] = field(default_factory=dict)
     findings: list[Finding] = field(default_factory=list)
 
     @property

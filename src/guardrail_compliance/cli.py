@@ -33,6 +33,7 @@ def scan(
     region: str = typer.Option("us-east-1", "--region", help="AWS region for Bedrock calls."),
     policy_dir: Path = typer.Option(Path("policies"), "--policy-dir", help="Directory containing YAML policy files."),
     use_bedrock: bool = typer.Option(True, "--bedrock/--no-bedrock", help="Use Bedrock when policies have guardrail bindings."),
+    explain: bool = typer.Option(False, "--explain", help="Show normalized facts and narrative in console output."),
     fail_on_findings: bool = typer.Option(False, "--fail-on-findings/--no-fail-on-findings", help="Exit non-zero when findings fail."),
 ) -> None:
     try:
@@ -58,7 +59,7 @@ def scan(
             else:
                 console.print(payload)
         else:
-            render_scan_results(results, console=console)
+            render_scan_results(results, console=console, explain=explain)
 
         if fail_on_findings and any(result.has_failures for result in results):
             raise typer.Exit(code=1)

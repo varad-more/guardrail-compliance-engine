@@ -32,3 +32,24 @@ def test_scan_command_json_output(project_root: Path) -> None:
 
     assert result.exit_code == 0
     assert '"resource_type": "aws_s3_bucket"' in result.stdout
+    assert '"normalized_facts"' in result.stdout
+
+
+def test_scan_command_explain_output(project_root: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "scan",
+            str(project_root / "examples/terraform/noncompliant-s3.tf"),
+            "--policy",
+            "soc2-basic",
+            "--policy-dir",
+            str(project_root / "policies"),
+            "--no-bedrock",
+            "--explain",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Normalized narrative" in result.stdout
+    assert "ssh_open_to_world" in result.stdout

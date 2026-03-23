@@ -5,6 +5,7 @@ from typing import Iterable
 
 from rich.console import Console
 from rich.panel import Panel
+from rich.pretty import Pretty
 from rich.text import Text
 from rich.tree import Tree
 
@@ -17,7 +18,12 @@ STATUS_STYLES = {
 }
 
 
-def render_scan_results(results: Iterable[ScanResult], console: Console | None = None) -> None:
+def render_scan_results(
+    results: Iterable[ScanResult],
+    console: Console | None = None,
+    *,
+    explain: bool = False,
+) -> None:
     console = console or Console()
     results = list(results)
     console.print(
@@ -32,6 +38,9 @@ def render_scan_results(results: Iterable[ScanResult], console: Console | None =
         tree = Tree(f"[bold]{result.file_path}[/bold] ({result.parser})")
         for resource in result.resources:
             resource_node = tree.add(f"{resource.resource_type}.{resource.resource_name}")
+            if explain:
+                resource_node.add(f"[dim]Normalized narrative:[/dim]\n{resource.normalized_text}")
+                resource_node.add(Pretty(resource.normalized_facts, expand_all=True))
             for finding in resource.findings:
                 status_style = STATUS_STYLES.get(finding.status, "white")
                 resource_node.add(
