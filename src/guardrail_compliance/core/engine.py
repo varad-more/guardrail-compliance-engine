@@ -134,6 +134,10 @@ class ComplianceEngine:
         if rule_id == "SOC2-NET-002":
             return self._check_security_group_ingress(resource, normalized, rule)
 
+        auto_routed = self._route_generic_rule(resource, normalized, rule)
+        if auto_routed is not None:
+            return auto_routed
+
         return Finding(
             rule_id=rule.id,
             title=rule.title,
@@ -269,6 +273,117 @@ class ComplianceEngine:
             proof=normalized.text,
             remediation=rule.remediation,
         )
+
+    def _route_generic_rule(
+        self,
+        resource: ResourceBlock,
+        normalized: NormalizedResource,
+        rule: PolicyRule,
+    ) -> Finding | None:
+        text = f"{rule.title} {rule.description} {rule.constraint}".lower()
+        resource_type = resource.resource_type
+
+        if resource_type in {"aws_s3_bucket", "AWS::S3::Bucket"}:
+            if "encrypt" in text:
+                return self._check_s3_encryption(resource, normalized, rule)
+            if "log" in text:
+                return self._check_s3_logging(resource, normalized, rule)
+            if "public" in text or "access block" in text:
+                return self._check_s3_public_access(resource, normalized, rule)
+
+        if resource_type in {"aws_s3_bucket_public_access_block", "AWS::S3::BucketPublicAccessBlock"}:
+            if "public" in text or "access block" in text:
+                return self._check_s3_public_access(resource, normalized, rule)
+
+        if resource_type in {"aws_db_instance", "AWS::RDS::DBInstance"}:
+            if "encrypt" in text or "kms" in text:
+                return self._check_rds_encryption(resource, normalized, rule)
+
+        if resource_type in {"aws_security_group", "AWS::EC2::SecurityGroup"}:
+            if any(keyword in text for keyword in ["ssh", "ingress", "public", "administrative", "admin port"]):
+                return self._check_security_group_ingress(resource, normalized, rule)
+
+        if resource_type in {"aws_iam_account_password_policy", "AWS::IAM::AccountPasswordPolicy"}:
+            if "password" in text:
+                return self._check_password_policy(resource, rule)
+
+        return None
+
+    def _check_password_policy(self, resource: ResourceBlock, rule: PolicyRule) -> Finding:
+        if resource.resource_type == "AWS::IAM::AccountPasswordPolicy":
+            minimum_length = self._int_value(resource.properties.get("MinimumPasswordLength"))
+            require_upper = self._bool_value_value(resource.properties.get("RequireUppercaseCharacters"))
+            require_lower = self._bool_value_value(resource.properties.get("RequireLowercaseCharacters"))
+            require_numbers = self._bool_value_value(resource.properties.get("RequireNumbers"))
+            require_symbols = self._bool_value_value(resource.properties.get("RequireSymbols"))
+            reuse_prevention = self._int_value(resource.properties.get("PasswordReusePrevention"))
+        else:
+            minimum_length = self._int_value(resource.properties.get("minimum_password_length"))
+            require_upper = self._bool_value_value(resource.properties.get("require_uppercase_characters"))
+            require_lower = self._bool_value_value(resource.properties.get("require_lowercase_characters"))
+            require_numbers = self._bool_value_value(resource.properties.get("require_numbers"))
+            require_symbols = self._bool_value_value(resource.properties.get("require_symbols"))
+            reuse_prevention = self._int_value(resource.properties.get("password_reuse_prevention"))
+
+        passed = (
+            (minimum_length or 0) >= 14
+            and require_upper is True
+            and require_lower is True
+            and require_numbers is True
+            and require_symbols is True
+            and (reuse_prevention or 0) >= 24
+        )
+        proof = (
+            f"minimum_length={minimum_length}, require_upper={require_upper}, require_lower={require_lower}, "
+            f"require_numbers={require_numbers}, require_symbols={require_symbols}, reuse_prevention={reuse_prevention}"
+        )
+        return Finding(
+            rule_id=rule.id,
+            title=rule.title,
+            severity=rule.severity,
+            status="PASS" if passed else "FAIL",
+            message=(
+                "Password policy meets strong baseline requirements."
+                if passed
+                else "Password policy is weaker than the configured strong baseline."
+            ),
+            proof=proof,
+            remediation=rule.remediation,
+        )
+
+    def _int_value(self, value) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _bool_value_value(self, value) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.lower()
+            if lowered == "true":
+                return True
+            if lowered == "false":
+                return False
+        return None
+
+    def _int_value(self, value: object) -> int | None:
+        try:
+            return int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+
+    def _bool_value_value(self, value: object) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.lower()
+            if lowered == "true":
+                return True
+            if lowered == "false":
+                return False
+        return None
 
     def _not_applicable(self, rule: PolicyRule, message: str) -> Finding:
         return Finding(
