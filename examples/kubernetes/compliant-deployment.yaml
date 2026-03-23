@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compliant-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: compliant-api
+  template:
+    metadata:
+      labels:
+        app: compliant-api
+    spec:
+      serviceAccountName: api-sa
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: api
+          image: nginx:1.27
+          securityContext:
+            privileged: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: compliant-api
+spec:
+  selector:
+    app: compliant-api
+  ports:
+    - port: 80
+      targetPort: 80

@@ -1,0 +1,74 @@
+name: Compliance Check
+
+on:
+  pull_request:
+    paths:
+      - '**.tf'
+      - '**.yaml'
+      - '**.yml'
+      - '**.json'
+  workflow_dispatch:
+
+jobs:
+  compliance:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install GuardRail locally
+        run: uv pip install --system '.[dev]'
+
+      - name: Configure AWS
+        if: ${{ secrets.AWS_ROLE_ARN != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Run Compliance Scan
+        run: |
+          guardrail scan . \
+            --policy soc2-basic \
+            --policy cis-aws-foundations \
+            --no-bedrock \
+            --format sarif \
+            --output results.sarif \
+            --fail-on-findings
+
+      - name: Upload SARIF
+        if: always() && hashFiles('results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
+
+      - name: Comment PR
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const sarif = JSON.parse(fs.readFileSync('results.sarif', 'utf8'));
+            const results = sarif.runs?.[0]?.results ?? [];
+            const critical = results.filter(r => r.level === 'error').length;
+            const warnings = results.filter(r => r.level === 'warning').length;
+            const body = `## 🛡️ Compliance Check Failed\n\n` +
+              `- 🔴 Critical/High: ${critical}\n` +
+              `- 🟡 Medium: ${warnings}\n\n` +
+              `See the Security tab for full details.`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });

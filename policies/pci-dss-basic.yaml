@@ -1,12 +1,58 @@
 name: pci-dss-basic
 version: "0.1.0"
 framework: PCI-DSS
-description: Starter placeholder PCI-DSS policy set for future Bedrock-backed expansion.
+description: >-
+  Starter PCI-DSS controls for encryption, restricted ingress, logging, and
+  strong account policy signals.
 rules:
   - id: PCI-NET-001
     title: Cardholder systems should not expose admin ports publicly
-    description: Placeholder rule for future implementation.
-    severity: HIGH
+    description: Administrative ports must not be open to the internet.
+    severity: CRITICAL
     resource_types:
       - aws_security_group
+      - AWS::EC2::SecurityGroup
     constraint: Cardholder data systems MUST restrict administrative ingress.
+    remediation: Remove or narrow public ingress on SSH/RDP/admin ports.
+
+  - id: PCI-ENC-001
+    title: Cardholder databases must be encrypted
+    description: Databases storing cardholder data must enable encryption at rest.
+    severity: HIGH
+    resource_types:
+      - aws_db_instance
+      - AWS::RDS::DBInstance
+    constraint: Databases MUST enable storage encryption and use KMS.
+    remediation: Enable storage encryption and set a KMS key.
+
+  - id: PCI-STO-001
+    title: Object storage must not be public
+    description: Buckets used in payment pipelines must block public access.
+    severity: CRITICAL
+    resource_types:
+      - aws_s3_bucket
+      - aws_s3_bucket_public_access_block
+      - AWS::S3::Bucket
+      - AWS::S3::BucketPublicAccessBlock
+    constraint: Storage buckets MUST block public access.
+    remediation: Add or enforce public access block configuration.
+
+  - id: PCI-LOG-001
+    title: Access logging should be enabled for storage buckets
+    description: Security-relevant storage should enable logging for forensics.
+    severity: MEDIUM
+    resource_types:
+      - aws_s3_bucket
+      - AWS::S3::Bucket
+    constraint: Storage buckets SHOULD enable logging.
+    remediation: Configure access logging to a dedicated log destination.
+
+  - id: PCI-IAM-001
+    title: IAM password policy should be strong
+    description: Account password policy should enforce strong password hygiene.
+    severity: HIGH
+    resource_types:
+      - aws_iam_account_password_policy
+      - AWS::IAM::AccountPasswordPolicy
+    constraint: Password policy MUST require strong length, rotation, and complexity.
+    remediation: Enforce a strong IAM account password policy.

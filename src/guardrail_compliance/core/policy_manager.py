@@ -42,9 +42,14 @@ class PolicyManager:
     def sync_policies(self, policy_dir: Path) -> dict[str, str]:
         registry = PolicyRegistry(policy_dir)
         mapping: dict[str, str] = {}
+        policies = registry.all()
+        candidates = [policy for policy in policies if policy.guardrail_id or policy.automated_reasoning_policy_arn]
+        if not candidates:
+            return mapping
+
         existing = {item.name: item for item in self.list_compliance_guardrails()}
 
-        for policy in registry.all():
+        for policy in policies:
             if policy.guardrail_id:
                 mapping[policy.name] = policy.guardrail_id
                 continue

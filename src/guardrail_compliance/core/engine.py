@@ -6,7 +6,7 @@ from pathlib import Path
 from .guardrail_client import BedrockGuardrailClient
 from .models import Finding, ResourceEvaluation, ScanResult
 from .normalization import NormalizedResource, ResourceNormalizer
-from ..parsers import TerraformParser
+from ..parsers import CloudFormationParser, KubernetesParser, TerraformParser
 from ..parsers.base import IaCParser, ResourceBlock
 from ..policies.registry import PolicyDefinition, PolicyRegistry, PolicyRule
 from ..utils.config import EngineConfig
@@ -19,7 +19,7 @@ class ComplianceEngine:
         project_root = Path(__file__).resolve().parents[3]
         policy_dir = config.resolve_policy_dir(project_root)
         self.policy_registry = PolicyRegistry(policy_dir)
-        self.parsers: list[IaCParser] = [TerraformParser()]
+        self.parsers: list[IaCParser] = [TerraformParser(), CloudFormationParser(), KubernetesParser()]
         self.normalizer = ResourceNormalizer()
         self._client_cache: dict[tuple[str, str], BedrockGuardrailClient] = {}
 
@@ -146,8 +146,8 @@ class ComplianceEngine:
         )
 
     def _check_s3_encryption(self, resource: ResourceBlock, normalized: NormalizedResource, rule: PolicyRule) -> Finding:
-        if resource.resource_type != "aws_s3_bucket":
-            return self._not_applicable(rule, "Rule currently checks Terraform aws_s3_bucket resources only.")
+        if resource.resource_type not in {"aws_s3_bucket", "AWS::S3::Bucket"}:
+            return self._not_applicable(rule, "Rule currently checks S3 bucket resources only.")
 
         encrypted = bool(normalized.facts.get("encryption_configured"))
         return Finding(
@@ -161,8 +161,8 @@ class ComplianceEngine:
         )
 
     def _check_s3_logging(self, resource: ResourceBlock, normalized: NormalizedResource, rule: PolicyRule) -> Finding:
-        if resource.resource_type != "aws_s3_bucket":
-            return self._not_applicable(rule, "Rule currently checks Terraform aws_s3_bucket resources only.")
+        if resource.resource_type not in {"aws_s3_bucket", "AWS::S3::Bucket"}:
+            return self._not_applicable(rule, "Rule currently checks S3 bucket resources only.")
 
         has_logging = bool(normalized.facts.get("logging_configured"))
         return Finding(
@@ -176,7 +176,7 @@ class ComplianceEngine:
         )
 
     def _check_s3_public_access(self, resource: ResourceBlock, normalized: NormalizedResource, rule: PolicyRule) -> Finding:
-        if resource.resource_type == "aws_s3_bucket_public_access_block":
+        if resource.resource_type in {"aws_s3_bucket_public_access_block", "AWS::S3::BucketPublicAccessBlock"}:
             all_enabled = bool(normalized.facts.get("all_public_access_blocks_enabled"))
             return Finding(
                 rule_id=rule.id,
@@ -192,14 +192,14 @@ class ComplianceEngine:
                 remediation=rule.remediation,
             )
 
-        if resource.resource_type != "aws_s3_bucket":
-            return self._not_applicable(rule, "Rule currently checks Terraform S3 bucket resources only.")
+        if resource.resource_type not in {"aws_s3_bucket", "AWS::S3::Bucket"}:
+            return self._not_applicable(rule, "Rule currently checks S3 bucket resources only.")
 
         acl = str(normalized.facts.get("acl", "private"))
         has_pab = bool(normalized.facts.get("public_access_block_present"))
         pab_all_enabled = bool(normalized.facts.get("public_access_block_all_enabled"))
 
-        if acl in {"public-read", "public-read-write", "website"}:
+        if acl.lower() in {"public-read", "public-read-write", "website", "publicread", "publicreadwrite", "authenticatedread"}:
             status = "FAIL"
             message = f"Bucket ACL is explicitly public: {acl}."
         elif has_pab and pab_all_enabled:
@@ -210,7 +210,7 @@ class ComplianceEngine:
             message = "A matching public access block resource exists, but one or more protections are disabled."
         else:
             status = "FAIL"
-            message = "No matching aws_s3_bucket_public_access_block resource found."
+            message = "No matching public access block configuration was found."
 
         return Finding(
             rule_id=rule.id,
@@ -223,8 +223,8 @@ class ComplianceEngine:
         )
 
     def _check_rds_encryption(self, resource: ResourceBlock, normalized: NormalizedResource, rule: PolicyRule) -> Finding:
-        if resource.resource_type != "aws_db_instance":
-            return self._not_applicable(rule, "Rule currently checks Terraform aws_db_instance resources only.")
+        if resource.resource_type not in {"aws_db_instance", "AWS::RDS::DBInstance"}:
+            return self._not_applicable(rule, "Rule currently checks RDS instance resources only.")
 
         encrypted = normalized.facts.get("storage_encrypted") is True
         has_kms = bool(normalized.facts.get("kms_key_configured"))
@@ -240,8 +240,8 @@ class ComplianceEngine:
         )
 
     def _check_security_group_ingress(self, resource: ResourceBlock, normalized: NormalizedResource, rule: PolicyRule) -> Finding:
-        if resource.resource_type != "aws_security_group":
-            return self._not_applicable(rule, "Rule currently checks Terraform aws_security_group resources only.")
+        if resource.resource_type not in {"aws_security_group", "AWS::EC2::SecurityGroup"}:
+            return self._not_applicable(rule, "Rule currently checks security group resources only.")
 
         ssh_open = bool(normalized.facts.get("ssh_open_to_world"))
         public_ranges = normalized.facts.get("public_ingress_ranges") or []

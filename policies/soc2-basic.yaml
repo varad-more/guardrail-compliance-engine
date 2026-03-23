@@ -13,6 +13,7 @@ rules:
     severity: HIGH
     resource_types:
       - aws_s3_bucket
+      - AWS::S3::Bucket
     constraint: >-
       S3 bucket configurations MUST include server-side encryption.
     remediation: >-
@@ -24,6 +25,7 @@ rules:
     severity: MEDIUM
     resource_types:
       - aws_s3_bucket
+      - AWS::S3::Bucket
     constraint: >-
       S3 buckets MUST include logging configuration with a target bucket.
     remediation: >-
@@ -36,10 +38,12 @@ rules:
     resource_types:
       - aws_s3_bucket
       - aws_s3_bucket_public_access_block
+      - AWS::S3::Bucket
+      - AWS::S3::BucketPublicAccessBlock
     constraint: >-
       S3 buckets MUST have public access blocked.
     remediation: >-
-      Add aws_s3_bucket_public_access_block with all four flags set to true.
+      Add public access blocking with all four flags set to true.
 
   - id: SOC2-ENC-002
     title: RDS Encryption at Rest
@@ -47,6 +51,7 @@ rules:
     severity: HIGH
     resource_types:
       - aws_db_instance
+      - AWS::RDS::DBInstance
     constraint: >-
       RDS instance configurations MUST set storage_encrypted to true and specify a kms_key_id.
     remediation: >-
@@ -58,6 +63,7 @@ rules:
     severity: CRITICAL
     resource_types:
       - aws_security_group
+      - AWS::EC2::SecurityGroup
     constraint: >-
       Security group ingress rules MUST NOT expose SSH to the internet and SHOULD only expose 443 publicly.
     remediation: >-
