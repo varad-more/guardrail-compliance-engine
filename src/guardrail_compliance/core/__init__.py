@@ -1,8 +1,16 @@
 from .engine import ComplianceEngine
-from .models import ComplianceResult, Finding, GuardrailInfo, ResourceEvaluation, ScanResult
+from .models import (
+    AutomatedReasoningPolicyInfo,
+    ComplianceResult,
+    Finding,
+    GuardrailInfo,
+    ResourceEvaluation,
+    ScanResult,
+)
 from .normalization import NormalizedResource, ResourceNormalizer
 
 __all__ = [
+    "AutomatedReasoningPolicyInfo",
     "ComplianceEngine",
     "ComplianceResult",
     "Finding",

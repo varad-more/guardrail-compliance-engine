@@ -109,3 +109,62 @@ def test_policy_sync_command_handles_no_bindings(project_root: Path) -> None:
 
     assert result.exit_code == 0
     assert "No policies were synced" in result.stdout
+
+
+def test_ar_cli_commands(monkeypatch, tmp_path: Path) -> None:
+    class StubManager:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def list_automated_reasoning_policies(self):
+            class Item:
+                name = "demo"
+                version = "DRAFT"
+                policy_arn = "arn:demo"
+                policy_id = "id-1"
+
+            return [Item()]
+
+        def create_automated_reasoning_policy(self, **kwargs):
+            return "arn:new"
+
+        def start_automated_reasoning_ingest_build_from_file(self, **kwargs):
+            return "wf-1"
+
+        def get_automated_reasoning_policy_build_workflow(self, **kwargs):
+            return {"policyArn": "arn:new", "buildWorkflowId": "wf-1", "status": "COMPLETED"}
+
+        def create_automated_reasoning_policy_version_from_latest(self, **kwargs):
+            return "1"
+
+        def create_automated_reasoning_policy_version(self, **kwargs):
+            return "2"
+
+        def export_automated_reasoning_policy_version(self, policy_version_arn):
+            return {"version": "1.0", "rules": [], "variables": [], "types": []}
+
+    monkeypatch.setattr("guardrail_compliance.cli.PolicyManager", StubManager)
+
+    source = tmp_path / "source.txt"
+    source.write_text("if this then that", encoding="utf-8")
+    out = tmp_path / "export.json"
+
+    list_result = runner.invoke(app, ["policy", "ar-list"])
+    create_result = runner.invoke(app, ["policy", "ar-create", "--name", "demo", "--source-file", str(source)])
+    status_result = runner.invoke(
+        app,
+        ["policy", "ar-build-status", "--policy-arn", "arn:new", "--workflow-id", "wf-1"],
+    )
+    version_result = runner.invoke(app, ["policy", "ar-version", "--policy-arn", "arn:new"])
+    export_result = runner.invoke(app, ["policy", "ar-export", "--policy-version-arn", "arn:new:1", "--output", str(out)])
+
+    assert list_result.exit_code == 0
+    assert "demo" in list_result.stdout
+    assert create_result.exit_code == 0
+    assert "Created AR policy" in create_result.stdout
+    assert status_result.exit_code == 0
+    assert "COMPLETED" in status_result.stdout
+    assert version_result.exit_code == 0
+    assert "Created policy version" in version_result.stdout
+    assert export_result.exit_code == 0
+    assert out.exists()

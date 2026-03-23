@@ -147,6 +147,119 @@ def sync_policies(
     console.print(table)
 
 
+@policy_app.command("ar-list")
+def ar_list(region: str = typer.Option("us-east-1", "--region")) -> None:
+    manager = PolicyManager(region=region)
+    try:
+        policies = manager.list_automated_reasoning_policies()
+    except GuardrailComplianceError as exc:
+        console.print(f"[red]AR list failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if not policies:
+        console.print("[yellow]No automated reasoning policies found.[/yellow]")
+        return
+
+    table = Table(title="Automated Reasoning Policies")
+    table.add_column("Name", style="cyan")
+    table.add_column("Version")
+    table.add_column("Policy ARN")
+    table.add_column("Policy ID")
+    for policy in policies:
+        table.add_row(policy.name, policy.version, policy.policy_arn, policy.policy_id or "—")
+    console.print(table)
+
+
+@policy_app.command("ar-create")
+def ar_create(
+    name: str = typer.Option(..., "--name", help="Automated Reasoning policy name."),
+    description: str = typer.Option("", "--description", help="Optional policy description."),
+    source_file: Optional[Path] = typer.Option(None, "--source-file", exists=True, readable=True, help="Optional source file (txt/pdf) to ingest immediately."),
+    region: str = typer.Option("us-east-1", "--region"),
+) -> None:
+    manager = PolicyManager(region=region)
+    try:
+        policy_arn = manager.create_automated_reasoning_policy(name=name, description=description or None)
+    except GuardrailComplianceError as exc:
+        console.print(f"[red]AR create failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"[green]Created AR policy:[/green] {policy_arn}")
+
+    if source_file:
+        try:
+            workflow_id = manager.start_automated_reasoning_ingest_build_from_file(
+                policy_arn=policy_arn,
+                source_file=source_file,
+            )
+        except GuardrailComplianceError as exc:
+            console.print(f"[red]Build workflow start failed:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        console.print(f"[green]Started ingest build workflow:[/green] {workflow_id}")
+
+
+@policy_app.command("ar-build-status")
+def ar_build_status(
+    policy_arn: str = typer.Option(..., "--policy-arn"),
+    workflow_id: str = typer.Option(..., "--workflow-id"),
+    region: str = typer.Option("us-east-1", "--region"),
+) -> None:
+    manager = PolicyManager(region=region)
+    try:
+        data = manager.get_automated_reasoning_policy_build_workflow(policy_arn=policy_arn, workflow_id=workflow_id)
+    except GuardrailComplianceError as exc:
+        console.print(f"[red]Build workflow lookup failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    table = Table(title="Automated Reasoning Build Workflow")
+    table.add_column("Field", style="cyan")
+    table.add_column("Value")
+    for key in ["policyArn", "buildWorkflowId", "status", "buildWorkflowType", "createdAt", "updatedAt"]:
+        if key in data and data[key] is not None:
+            table.add_row(key, str(data[key]))
+    console.print(table)
+
+
+@policy_app.command("ar-version")
+def ar_version(
+    policy_arn: str = typer.Option(..., "--policy-arn"),
+    definition_hash: Optional[str] = typer.Option(None, "--definition-hash", help="Optional definition hash; if omitted, latest hash is fetched first."),
+    region: str = typer.Option("us-east-1", "--region"),
+) -> None:
+    manager = PolicyManager(region=region)
+    try:
+        if definition_hash:
+            version = manager.create_automated_reasoning_policy_version(policy_arn=policy_arn, definition_hash=definition_hash)
+        else:
+            version = manager.create_automated_reasoning_policy_version_from_latest(policy_arn=policy_arn)
+    except GuardrailComplianceError as exc:
+        console.print(f"[red]AR version creation failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"[green]Created policy version:[/green] {version}")
+
+
+@policy_app.command("ar-export")
+def ar_export(
+    policy_version_arn: str = typer.Option(..., "--policy-version-arn", help="Versioned policy ARN ending with :<version>."),
+    output: Optional[Path] = typer.Option(None, "--output", help="Optional JSON output path."),
+    region: str = typer.Option("us-east-1", "--region"),
+) -> None:
+    manager = PolicyManager(region=region)
+    try:
+        definition = manager.export_automated_reasoning_policy_version(policy_version_arn)
+    except GuardrailComplianceError as exc:
+        console.print(f"[red]AR export failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    payload = json.dumps(definition, indent=2)
+    if output:
+        output.write_text(payload, encoding="utf-8")
+        console.print(f"Wrote exported policy definition to {output}")
+    else:
+        typer.echo(payload)
+
+
 @app.command()
 def init(target: Path = typer.Argument(Path(".guardrail.yaml"), help="Config file to create.")) -> None:
     if target.exists():

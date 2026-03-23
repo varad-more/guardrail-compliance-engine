@@ -31,3 +31,13 @@ A policy file can also include:
 - `cross_region_profile`
 
 If you attach a versioned Automated Reasoning policy ARN, `guardrail policy sync` can create or reuse a Bedrock guardrail for that policy.
+
+## Automated Reasoning lifecycle commands
+
+```bash
+guardrail policy ar-list
+guardrail policy ar-create --name "infra-compliance" --source-file ./policy-source.txt
+guardrail policy ar-build-status --policy-arn <policy-arn> --workflow-id <workflow-id>
+guardrail policy ar-version --policy-arn <policy-arn>
+guardrail policy ar-export --policy-version-arn <policy-arn>:1 --output policy-definition.json
+```

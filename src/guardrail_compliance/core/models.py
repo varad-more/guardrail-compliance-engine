@@ -39,6 +39,18 @@ class GuardrailInfo:
 
 
 @dataclass(slots=True)
+class AutomatedReasoningPolicyInfo:
+    name: str
+    policy_arn: str
+    policy_id: str | None = None
+    version: str = "DRAFT"
+    description: str | None = None
+    definition_hash: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+@dataclass(slots=True)
 class ResourceEvaluation:
     resource_type: str
     resource_name: str

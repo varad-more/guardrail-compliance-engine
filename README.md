@@ -56,6 +56,8 @@ guardrail scan examples/terraform/noncompliant-s3.tf --policy soc2-basic --no-be
 
 ## CLI examples
 
+> Full phase tracker: see `PHASE_STATUS.md`.
+
 ```bash
 # Scan a single file
 guardrail scan examples/terraform/noncompliant-s3.tf --policy soc2-basic --no-bedrock
@@ -74,6 +76,13 @@ guardrail policy validate policies/custom-example.yaml
 
 # Sync policies that have Automated Reasoning policy ARNs attached
 guardrail policy sync --policy-dir policies
+
+# Automated Reasoning lifecycle helpers
+guardrail policy ar-list
+guardrail policy ar-create --name "infra-compliance" --source-file ./policy-source.txt
+guardrail policy ar-build-status --policy-arn <policy-arn> --workflow-id <workflow-id>
+guardrail policy ar-version --policy-arn <policy-arn>
+guardrail policy ar-export --policy-version-arn <policy-arn>:1 --output policy-definition.json
 ```
 
 ## Supported resource coverage today
