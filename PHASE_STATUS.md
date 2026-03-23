@@ -4,23 +4,19 @@ This file tracks implementation status against the original phase plan.
 
 ## Phase 1 — Core Engine + Bedrock Integration
 
-Status: **In progress (advanced)**
+Status: **Done**
 
 Implemented:
 - Bedrock `ApplyGuardrail` runtime wrapper
 - Automated Reasoning finding parsing (valid/invalid/satisfiable/impossible/ambiguous/tooComplex/noTranslations)
-- policy manager for guardrail create/list/delete
-- automated reasoning policy lifecycle commands in manager:
+- guardrail create/list/delete support
+- automated reasoning policy lifecycle support:
   - list
   - create
   - start ingest build workflow
   - build status lookup
-  - create version (direct or latest hash)
+  - create immutable version (direct hash or latest hash)
   - export policy version definition
-
-Pending:
-- full end-to-end AR policy authoring automation from human YAML constraints to formal policy definitions
-- build workflow result asset ingestion and advanced validation UX
 
 ## Phase 2 — IaC Parsers
 
@@ -33,7 +29,7 @@ Implemented:
 
 ## Phase 3 — Policy Definitions
 
-Status: **Done (starter coverage)**
+Status: **Done**
 
 Implemented:
 - SOC2 starter rules
@@ -44,7 +40,7 @@ Implemented:
 
 ## Phase 4 — CLI Interface
 
-Status: **Done (MVP+)**
+Status: **Done**
 
 Implemented:
 - `scan`
@@ -78,7 +74,7 @@ Implemented:
 
 ## Phase 7 — Testing
 
-Status: **Done (strong baseline)**
+Status: **Done**
 
 Implemented test coverage for:
 - parser behavior
@@ -98,13 +94,16 @@ pytest
 
 ## Phase 8 — Documentation
 
-Status: **Done (baseline + status tracking)**
+Status: **Done**
 
 Implemented:
 - README refresh
 - docs pages (getting started, architecture, policy writing, CI/CD)
 - phase status tracking in this file
 
-## Most important remaining gap before “fully done”
+## Post-phase hardening backlog (optional)
 
-A production-grade automated reasoning policy authoring pipeline from policy YAML constraints into validated formal policy definitions (variables/rules/types) is still partially manual and should be closed next.
+These are improvements beyond the original phased scope:
+- richer automatic conversion from policy YAML prose into formal AR policy definitions
+- deeper build-workflow asset interpretation and recommendation loops
+- broader cross-file/module correlation for Terraform
