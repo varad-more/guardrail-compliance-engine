@@ -1,0 +1,12 @@
+name: hipaa-basic
+version: "0.1.0"
+framework: HIPAA
+description: Starter placeholder HIPAA policy set for future Bedrock-backed expansion.
+rules:
+  - id: HIPAA-ENC-001
+    title: Protected data stores must be encrypted
+    description: Placeholder rule for future implementation.
+    severity: HIGH
+    resource_types:
+      - aws_db_instance
+    constraint: Protected data stores MUST be encrypted.

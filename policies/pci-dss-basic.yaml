@@ -1,0 +1,12 @@
+name: pci-dss-basic
+version: "0.1.0"
+framework: PCI-DSS
+description: Starter placeholder PCI-DSS policy set for future Bedrock-backed expansion.
+rules:
+  - id: PCI-NET-001
+    title: Cardholder systems should not expose admin ports publicly
+    description: Placeholder rule for future implementation.
+    severity: HIGH
+    resource_types:
+      - aws_security_group
+    constraint: Cardholder data systems MUST restrict administrative ingress.

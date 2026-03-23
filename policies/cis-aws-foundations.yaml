@@ -1,0 +1,12 @@
+name: cis-aws-foundations
+version: "0.1.0"
+framework: CIS AWS Foundations
+description: Starter placeholder CIS policy set for future Bedrock-backed expansion.
+rules:
+  - id: CIS-IAM-001
+    title: IAM password policy must be strong
+    description: Placeholder rule for future implementation.
+    severity: HIGH
+    resource_types:
+      - aws_iam_account_password_policy
+    constraint: IAM password policies MUST meet minimum complexity requirements.
