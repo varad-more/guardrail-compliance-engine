@@ -1,10 +1,11 @@
-PYTHON ?= python3
-
 install:
-	$(PYTHON) -m pip install -e '.[dev]'
+	uv sync --extra dev
 
 test:
-	pytest
+	uv run pytest
 
 scan-example:
-	guardrail scan examples/terraform/noncompliant-s3.tf --policy soc2-basic
+	uv run guardrail scan examples/terraform/noncompliant-s3.tf --policy soc2-basic
+
+smoke-bedrock:
+	uv run python scripts/bedrock_smoke.py
