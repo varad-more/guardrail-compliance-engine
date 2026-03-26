@@ -24,6 +24,7 @@ def render_scan_results(
     *,
     explain: bool = False,
 ) -> None:
+    """Print scan results as a Rich tree with a colour-coded summary panel."""
     console = console or Console()
     results = list(results)
     console.print(

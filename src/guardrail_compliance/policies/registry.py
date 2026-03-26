@@ -35,6 +35,8 @@ class PolicyDefinition:
 
 
 class PolicyRegistry:
+    """Loads, validates, and queries YAML policy definitions from a directory."""
+
     def __init__(self, policy_dir: Path) -> None:
         self.policy_dir = policy_dir
         self._policies: dict[str, PolicyDefinition] = {}

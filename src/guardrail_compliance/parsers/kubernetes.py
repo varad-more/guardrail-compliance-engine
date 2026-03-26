@@ -10,6 +10,7 @@ from ..utils.exceptions import ParserError
 
 
 class KubernetesParser(IaCParser):
+    """Parse Kubernetes multi-document YAML manifests into resource blocks."""
     def supports(self, file_path: Path) -> bool:
         if file_path.suffix.lower() not in {".yaml", ".yml"}:
             return False

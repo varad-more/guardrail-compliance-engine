@@ -8,6 +8,7 @@ from ..core.models import ScanResult
 
 
 def build_json_report(results: Iterable[ScanResult]) -> list[dict[str, Any]]:
+    """Serialise scan results into a JSON-friendly list of dicts."""
     return [_convert(result) for result in results]
 
 

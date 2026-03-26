@@ -116,7 +116,7 @@ def test_policy_sync_command_handles_no_bindings(project_root: Path) -> None:
     result = runner.invoke(app, ["policy", "sync", "--policy-dir", str(project_root / "policies")])
 
     assert result.exit_code == 0
-    assert "No policies were synced" in result.stdout
+    assert "No policies synced" in result.stdout
 
 
 def test_ar_cli_commands(monkeypatch, tmp_path: Path) -> None:

@@ -8,6 +8,7 @@ from ..core.models import Finding, ResourceEvaluation, ScanResult
 
 
 def build_html_report(results: Iterable[ScanResult]) -> str:
+    """Render a self-contained HTML compliance report with a donut chart and findings detail."""
     results = list(results)
     passed = sum(1 for scan in results for resource in scan.resources for finding in resource.findings if finding.status == "PASS")
     failed = sum(1 for scan in results for resource in scan.resources for finding in resource.findings if finding.status == "FAIL")

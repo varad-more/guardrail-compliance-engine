@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from collections import OrderedDict
 from typing import Any, Iterable
 
 from ..core.models import Finding, ResourceEvaluation, ScanResult
 
 
 def build_sarif_report(results: Iterable[ScanResult]) -> dict[str, Any]:
-    rules: OrderedDict[str, dict[str, Any]] = OrderedDict()
+    """Build a SARIF 2.1.0 report from scan results (for GitHub Security tab integration)."""
+    rules: dict[str, dict[str, Any]] = dict()
     sarif_results: list[dict[str, Any]] = []
 
     for scan in results:

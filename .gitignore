@@ -11,6 +11,10 @@ venv/
 htmlcov/
 dist/
 build/
+
+# Scan output (generated files)
 *.sarif
+*.html
 *.json
 !.github/workflows/*.json
+!examples/**/*.json

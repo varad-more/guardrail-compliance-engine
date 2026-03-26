@@ -22,6 +22,7 @@ class PolicyManager:
     # Guardrail management
     # ---------------------------------------------------------------------
     def create_compliance_guardrail(self, name: str, policy_config: dict[str, Any]) -> str:
+        """Create a Bedrock guardrail with an automated-reasoning policy binding."""
         policy_arns = policy_config.get("policy_arns") or policy_config.get("policies") or []
         if not policy_arns:
             raise PolicyValidationError("policy_config must include at least one versioned Automated Reasoning policy ARN")
@@ -43,6 +44,7 @@ class PolicyManager:
         return response["guardrailId"]
 
     def sync_policies(self, policy_dir: Path) -> dict[str, str]:
+        """Sync local policy YAML files to Bedrock guardrails; return {name: guardrail_id}."""
         registry = PolicyRegistry(policy_dir)
         mapping: dict[str, str] = {}
         policies = registry.all()
@@ -79,6 +81,7 @@ class PolicyManager:
         return mapping
 
     def list_compliance_guardrails(self) -> list[GuardrailInfo]:
+        """List all Bedrock guardrails in the account."""
         try:
             response = self.client.list_guardrails()
         except (ClientError, BotoCoreError) as exc:
@@ -102,6 +105,7 @@ class PolicyManager:
         return results
 
     def delete_guardrail(self, guardrail_id: str) -> None:
+        """Delete a Bedrock guardrail by ID."""
         try:
             self.client.delete_guardrail(guardrailIdentifier=guardrail_id)
         except (ClientError, BotoCoreError) as exc:
@@ -111,6 +115,7 @@ class PolicyManager:
     # Automated Reasoning policy lifecycle
     # ---------------------------------------------------------------------
     def list_automated_reasoning_policies(self) -> list[AutomatedReasoningPolicyInfo]:
+        """List all Automated Reasoning policies in the account."""
         try:
             response = self.client.list_automated_reasoning_policies()
         except (ClientError, BotoCoreError) as exc:
@@ -185,6 +190,7 @@ class PolicyManager:
         document_content_type: str = "txt",
         document_description: str | None = None,
     ) -> str:
+        """Upload a source document and kick off an AR policy ingest build."""
         blob = source_content.encode("utf-8") if isinstance(source_content, str) else source_content
         document = {
             "document": blob,
@@ -232,6 +238,7 @@ class PolicyManager:
         source_file: Path,
         document_description: str | None = None,
     ) -> str:
+        """Convenience wrapper: read a local file and start an ingest build."""
         suffix = source_file.suffix.lower()
         content_type = "pdf" if suffix == ".pdf" else "txt"
         payload = source_file.read_bytes() if content_type == "pdf" else source_file.read_text(encoding="utf-8")
@@ -244,6 +251,7 @@ class PolicyManager:
         )
 
     def create_automated_reasoning_policy_version(self, *, policy_arn: str, definition_hash: str) -> str:
+        """Freeze the current policy definition into a numbered version."""
         try:
             response = self.client.create_automated_reasoning_policy_version(
                 policyArn=policy_arn,
@@ -255,12 +263,14 @@ class PolicyManager:
         return str(response["version"])
 
     def create_automated_reasoning_policy_version_from_latest(self, *, policy_arn: str) -> str:
+        """Fetch the latest definition hash and create a version from it."""
         policy = self.get_automated_reasoning_policy(policy_arn)
         if not policy.definition_hash:
             raise GuardrailComplianceError(f"Policy {policy_arn} has no definition hash; cannot version it.")
         return self.create_automated_reasoning_policy_version(policy_arn=policy_arn, definition_hash=policy.definition_hash)
 
     def export_automated_reasoning_policy_version(self, policy_version_arn: str) -> dict[str, Any]:
+        """Export a versioned policy definition as a JSON-serialisable dict."""
         try:
             response = self.client.export_automated_reasoning_policy_version(policyArn=policy_version_arn)
         except (ClientError, BotoCoreError) as exc:

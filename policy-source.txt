@@ -1,0 +1,97 @@
+Infrastructure Compliance Policy for AWS Resources
+===================================================
+
+This document defines the compliance rules that the automated reasoning engine
+must enforce when evaluating infrastructure-as-code configurations. Each rule
+uses RFC 2119 keywords (MUST, MUST NOT, SHOULD, SHOULD NOT) to indicate
+requirement levels.
+
+
+S3 Bucket Encryption
+--------------------
+All S3 buckets MUST have server-side encryption enabled. Encryption MUST use
+either AES-256 (SSE-S3) or AWS KMS (SSE-KMS). A bucket that does not include
+a server_side_encryption_configuration block is non-compliant. A bucket that
+specifies an encryption algorithm other than AES256 or aws:kms is
+non-compliant.
+
+
+S3 Access Logging
+-----------------
+All S3 buckets MUST have access logging enabled. The logging configuration MUST
+specify a target bucket that receives the access log records. A bucket that does
+not include a logging configuration block is non-compliant. The target bucket
+SHOULD be a dedicated logging bucket separate from the source bucket.
+
+
+S3 Public Access
+----------------
+S3 buckets MUST NOT be publicly accessible. A bucket is considered publicly
+accessible if any of the following conditions are true:
+
+  - The bucket ACL is set to public-read, public-read-write, authenticated-read,
+    or website.
+  - The bucket does not have a public access block configuration.
+  - The public access block exists but one or more of the four flags
+    (block_public_acls, block_public_policy, ignore_public_acls,
+    restrict_public_buckets) is set to false or is missing.
+
+All four public access block flags MUST be set to true. A compliant
+configuration requires both a public access block resource and all four flags
+enabled.
+
+
+RDS Encryption
+--------------
+All RDS database instances MUST have storage encryption enabled. The
+storage_encrypted property MUST be set to true. A customer-managed KMS key
+MUST be specified via kms_key_id. An RDS instance that has storage_encrypted
+set to false, or that does not specify a kms_key_id, is non-compliant.
+
+
+RDS Backup Retention
+--------------------
+All RDS database instances MUST configure automated backup retention. The
+backup_retention_period MUST be set to a positive integer (at least 1 day).
+An RDS instance with backup_retention_period set to 0 or not configured is
+non-compliant. A backup_retention_period of at least 7 days is RECOMMENDED
+for production workloads.
+
+
+Security Group Ingress
+----------------------
+Security groups MUST NOT allow unrestricted inbound access from the internet.
+The following conditions make a security group non-compliant:
+
+  - An ingress rule allows SSH (port 22) from 0.0.0.0/0 or ::/0.
+  - An ingress rule allows RDP (port 3389) from 0.0.0.0/0 or ::/0.
+  - An ingress rule allows any administrative port from 0.0.0.0/0 or ::/0.
+
+The only port that SHOULD be exposed publicly is HTTPS (port 443). All other
+public ingress rules MUST be restricted to specific trusted CIDR ranges.
+A security group with no public ingress rules on non-443 ports is compliant.
+
+
+IAM Password Policy
+-------------------
+The IAM account password policy MUST enforce the following minimum requirements:
+
+  - Minimum password length MUST be at least 14 characters.
+  - MUST require at least one uppercase letter.
+  - MUST require at least one lowercase letter.
+  - MUST require at least one numeric digit.
+  - MUST require at least one special character (symbol).
+  - Password reuse prevention MUST be set to at least 24 previous passwords.
+
+A password policy that does not meet all of these thresholds simultaneously is
+non-compliant.
+
+
+Kubernetes Workload Security
+----------------------------
+Kubernetes Pods and Deployments SHOULD run as non-root. The securityContext
+SHOULD set runAsNonRoot to true at the pod level or for all containers.
+Containers MUST NOT run in privileged mode. A container with
+securityContext.privileged set to true is non-compliant. Each workload SHOULD
+specify a dedicated serviceAccountName rather than relying on the default
+service account.

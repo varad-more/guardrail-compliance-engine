@@ -11,17 +11,48 @@ from ..utils.exceptions import BedrockEvaluationError
 
 
 class BedrockGuardrailClient:
-    """Thin wrapper around the Bedrock ApplyGuardrail runtime API."""
+    """Thin wrapper around the Bedrock ``ApplyGuardrail`` runtime API.
 
+    Sends normalised resource text to Bedrock and parses the automated-reasoning
+    response into structured ``Finding`` objects.
+    """
+
+    # All possible automated-reasoning finding types returned by the API.
     FINDING_KINDS = (
-        "invalid",
-        "impossible",
-        "translationAmbiguous",
-        "tooComplex",
-        "noTranslations",
-        "satisfiable",
-        "valid",
+        "invalid", "impossible", "translationAmbiguous",
+        "tooComplex", "noTranslations", "satisfiable", "valid",
     )
+
+    # Lookup tables — one line per finding kind keeps the mapping scannable.
+    _STATUS: dict[str, str] = {
+        "valid": "PASS",
+        "satisfiable": "WARN", "translationAmbiguous": "WARN", "noTranslations": "WARN",
+        "invalid": "FAIL", "impossible": "FAIL", "tooComplex": "FAIL",
+    }
+    _SEVERITY: dict[str, str] = {
+        "valid": "LOW",
+        "satisfiable": "MEDIUM", "translationAmbiguous": "MEDIUM", "noTranslations": "MEDIUM",
+        "tooComplex": "HIGH", "impossible": "HIGH", "invalid": "HIGH",
+    }
+    _TITLE: dict[str, str] = {
+        "valid": "Automated reasoning: valid",
+        "invalid": "Automated reasoning: invalid",
+        "satisfiable": "Automated reasoning: satisfiable",
+        "impossible": "Automated reasoning: impossible",
+        "translationAmbiguous": "Automated reasoning: translation ambiguous",
+        "tooComplex": "Automated reasoning: too complex",
+        "noTranslations": "Automated reasoning: no translations",
+    }
+    _MESSAGE: dict[str, str] = {
+        "valid": "Claims are logically supported by the policy.",
+        "invalid": "Claims contradict the policy rules.",
+        "satisfiable": "Claims could be true or false depending on missing assumptions.",
+        "impossible": "The translated premises or claims are logically impossible under the policy.",
+        "translationAmbiguous": "The input can be translated into multiple logical interpretations.",
+        "tooComplex": "The input is too complex for automated reasoning evaluation.",
+        "noTranslations": "No policy-relevant statements could be translated from the input.",
+    }
+    _REMEDIABLE_KINDS = {"translationAmbiguous", "noTranslations", "tooComplex"}
 
     def __init__(
         self,
@@ -36,20 +67,25 @@ class BedrockGuardrailClient:
         self.region = region
         self.client = client or boto3.client("bedrock-runtime", region_name=region)
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     async def evaluate(self, content: str, content_type: str = "terraform") -> ComplianceResult:
+        """Call ``ApplyGuardrail`` and return a parsed ``ComplianceResult``."""
         try:
             response = await asyncio.to_thread(
                 self.client.apply_guardrail,
                 guardrailIdentifier=self.guardrail_id,
                 guardrailVersion=self.guardrail_version,
-                source="INPUT",
-                content=self._build_content_blocks(content),
+                source="OUTPUT",
+                content=[{"text": {"text": content}}],
                 outputScope="FULL",
             )
         except (ClientError, BotoCoreError) as exc:
             raise BedrockEvaluationError(f"ApplyGuardrail failed: {exc}") from exc
 
-        findings = self._parse_assessment(response)
+        findings = self._parse_assessments(response)
         usage = response.get("usage", {})
         for assessment in response.get("assessments", []):
             usage.update(assessment.get("invocationMetrics", {}).get("usage", {}))
@@ -61,165 +97,117 @@ class BedrockGuardrailClient:
             usage=usage,
         )
 
-    def _parse_assessment(self, response: dict[str, Any]) -> list[Finding]:
-        parsed: list[Finding] = []
+    # ------------------------------------------------------------------
+    # Response parsing
+    # ------------------------------------------------------------------
+
+    def _parse_assessments(self, response: dict[str, Any]) -> list[Finding]:
+        """Walk all assessments in the response and build Finding objects."""
+        findings: list[Finding] = []
         action = response.get("action", "UNKNOWN")
 
         for assessment in response.get("assessments", []):
-            policy_assessment = assessment.get("automatedReasoningPolicy") or {}
-            for raw_finding in policy_assessment.get("findings", []):
-                kind, payload = self._unpack_finding(raw_finding)
-                translation = payload.get("translation", {}) if isinstance(payload.get("translation"), dict) else {}
-                confidence = translation.get("confidence")
-                title = self._title_for_kind(kind)
-                rule_id = self._rule_id(kind, payload)
-                message = self._message_for_kind(kind, payload)
-                proof = self._build_proof(kind, payload, confidence, action)
-                parsed.append(
-                    Finding(
-                        rule_id=rule_id,
-                        title=title,
-                        severity=self._severity_for_kind(kind),
-                        status=self._status_for_kind(kind),
-                        message=message,
-                        proof=proof,
-                        remediation=self._remediation_for_kind(kind),
-                        source="bedrock",
-                        raw=raw_finding,
-                    )
-                )
+            ar_policy = assessment.get("automatedReasoningPolicy") or {}
+            for raw in ar_policy.get("findings", []):
+                kind, payload = self._unpack_finding(raw)
+                translation = payload.get("translation") if isinstance(payload.get("translation"), dict) else {}
+                findings.append(Finding(
+                    rule_id=self._rule_id(payload),
+                    title=self._TITLE.get(kind, f"Automated reasoning: {kind}"),
+                    severity=self._SEVERITY.get(kind, "MEDIUM"),
+                    status=self._STATUS.get(kind, "FAIL"),
+                    message=self._message(kind, payload),
+                    proof=self._build_proof(kind, payload, (translation or {}).get("confidence"), action),
+                    remediation=("Normalize the resource facts further and reduce ambiguity before retrying."
+                                 if kind in self._REMEDIABLE_KINDS else None),
+                    source="bedrock",
+                    raw=raw,
+                ))
 
-        return parsed
+        return findings
 
-    def _build_content_blocks(self, text: str) -> list[dict[str, Any]]:
-        return [{"text": {"text": text}}]
-
-    def _unpack_finding(self, raw_finding: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    def _unpack_finding(self, raw: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """Extract the (kind, payload) pair from a raw finding dict."""
         for kind in self.FINDING_KINDS:
-            if kind in raw_finding:
-                payload = raw_finding.get(kind) or {}
+            if kind in raw:
+                payload = raw.get(kind) or {}
                 return kind, payload if isinstance(payload, dict) else {"value": payload}
-        return "unknown", raw_finding
+        return "unknown", raw
 
-    def _status_for_kind(self, kind: str) -> str:
-        if kind == "valid":
-            return "PASS"
-        if kind in {"satisfiable", "translationAmbiguous", "noTranslations"}:
-            return "WARN"
-        return "FAIL"
+    # ------------------------------------------------------------------
+    # Finding field builders
+    # ------------------------------------------------------------------
 
-    def _severity_for_kind(self, kind: str) -> str:
-        return {
-            "valid": "LOW",
-            "satisfiable": "MEDIUM",
-            "translationAmbiguous": "MEDIUM",
-            "noTranslations": "MEDIUM",
-            "tooComplex": "HIGH",
-            "impossible": "HIGH",
-            "invalid": "HIGH",
-        }.get(kind, "MEDIUM")
+    @staticmethod
+    def _rule_id(payload: dict[str, Any]) -> str:
+        """Derive the rule ID from supporting/contradicting rules, or fall back to the kind."""
+        ids = [
+            item.get("identifier")
+            for key in ("supportingRules", "contradictingRules")
+            for item in payload.get(key, [])
+            if item.get("identifier")
+        ]
+        return ",".join(ids) if ids else "UNKNOWN"
 
-    def _title_for_kind(self, kind: str) -> str:
-        return {
-            "valid": "Automated reasoning: valid",
-            "invalid": "Automated reasoning: invalid",
-            "satisfiable": "Automated reasoning: satisfiable",
-            "impossible": "Automated reasoning: impossible",
-            "translationAmbiguous": "Automated reasoning: translation ambiguous",
-            "tooComplex": "Automated reasoning: too complex",
-            "noTranslations": "Automated reasoning: no translations",
-        }.get(kind, f"Automated reasoning: {kind}")
-
-    def _rule_id(self, kind: str, payload: dict[str, Any]) -> str:
-        rule_ids = [item.get("identifier") for item in payload.get("supportingRules", []) if item.get("identifier")]
-        rule_ids += [item.get("identifier") for item in payload.get("contradictingRules", []) if item.get("identifier")]
-        if rule_ids:
-            return ",".join(rule_ids)
-        return kind.upper()
-
-    def _message_for_kind(self, kind: str, payload: dict[str, Any]) -> str:
-        translations = self._translation_lines(payload.get("translation", {}))
-        if kind == "valid":
-            return "Claims are logically supported by the policy." if translations else "Input is logically valid against the policy."
-        if kind == "invalid":
-            return "Claims contradict the policy rules."
-        if kind == "satisfiable":
-            return "Claims could be true or false depending on missing assumptions."
-        if kind == "impossible":
-            return "The translated premises or claims are logically impossible under the policy."
-        if kind == "translationAmbiguous":
-            return "The input can be translated into multiple logical interpretations."
-        if kind == "tooComplex":
-            return "The input is too complex for automated reasoning evaluation."
-        if kind == "noTranslations":
-            return "No policy-relevant statements could be translated from the input."
-        return f"Automated reasoning returned a {kind} result."
+    def _message(self, kind: str, payload: dict[str, Any]) -> str:
+        """Return a human-readable message for the finding kind."""
+        if kind == "valid" and not self._translation_lines(payload.get("translation", {})):
+            return "Input is logically valid against the policy."
+        return self._MESSAGE.get(kind, f"Automated reasoning returned a {kind} result.")
 
     def _build_proof(self, kind: str, payload: dict[str, Any], confidence: Any, action: str) -> str:
-        proof_lines: list[str] = []
+        """Assemble a proof string from translation, rules, and scenario data."""
+        lines: list[str] = []
         if confidence is not None:
-            proof_lines.append(f"Translation confidence: {confidence}")
+            lines.append(f"Translation confidence: {confidence}")
 
-        translation_lines = self._translation_lines(payload.get("translation", {}))
-        if translation_lines:
-            proof_lines.extend(translation_lines)
+        lines.extend(self._translation_lines(payload.get("translation", {})))
 
-        rules = [item.get("identifier") for item in payload.get("supportingRules", []) if item.get("identifier")]
-        if rules:
-            proof_lines.append(f"Supporting rules: {', '.join(rules)}")
-
-        contradictions = [item.get("identifier") for item in payload.get("contradictingRules", []) if item.get("identifier")]
-        if contradictions:
-            proof_lines.append(f"Contradicting rules: {', '.join(contradictions)}")
+        for label, key in (("Supporting rules", "supportingRules"), ("Contradicting rules", "contradictingRules")):
+            ids = [item.get("identifier") for item in payload.get(key, []) if item.get("identifier")]
+            if ids:
+                lines.append(f"{label}: {', '.join(ids)}")
 
         for label, key in (
             ("Claims-true scenario", "claimsTrueScenario"),
             ("Claims-false scenario", "claimsFalseScenario"),
             ("Difference scenario", "differenceScenarios"),
         ):
-            scenario_text = self._scenario_lines(payload.get(key))
-            if scenario_text:
-                proof_lines.append(f"{label}: {scenario_text}")
+            text = self._format_scenario(payload.get(key))
+            if text:
+                lines.append(f"{label}: {text}")
 
-        if not proof_lines:
-            proof_lines.append(f"ApplyGuardrail action={action}; finding type={kind}")
-        return "\n".join(proof_lines)
+        return "\n".join(lines) if lines else f"ApplyGuardrail action={action}; finding type={kind}"
 
-    def _remediation_for_kind(self, kind: str) -> str | None:
-        if kind in {"translationAmbiguous", "noTranslations", "tooComplex"}:
-            return "Normalize the resource facts further and reduce ambiguity before retrying Bedrock evaluation."
-        return None
+    # ------------------------------------------------------------------
+    # Translation & scenario helpers
+    # ------------------------------------------------------------------
 
-    def _translation_lines(self, translation: Any) -> list[str]:
+    @staticmethod
+    def _translation_lines(translation: Any) -> list[str]:
+        """Extract premise, claim, and untranslated items from a translation dict."""
         if not isinstance(translation, dict):
             return []
         lines: list[str] = []
-        premises = [item.get("naturalLanguage") for item in translation.get("premises", []) if item.get("naturalLanguage")]
-        claims = [item.get("naturalLanguage") for item in translation.get("claims", []) if item.get("naturalLanguage")]
-        untranslated_premises = [item.get("text") for item in translation.get("untranslatedPremises", []) if item.get("text")]
-        untranslated_claims = [item.get("text") for item in translation.get("untranslatedClaims", []) if item.get("text")]
-        if premises:
-            lines.append(f"Premises: {' | '.join(premises)}")
-        if claims:
-            lines.append(f"Claims: {' | '.join(claims)}")
-        if untranslated_premises:
-            lines.append(f"Untranslated premises: {' | '.join(untranslated_premises)}")
-        if untranslated_claims:
-            lines.append(f"Untranslated claims: {' | '.join(untranslated_claims)}")
+        for label, entries_key, item_key in (
+            ("Premises", "premises", "naturalLanguage"),
+            ("Claims", "claims", "naturalLanguage"),
+            ("Untranslated premises", "untranslatedPremises", "text"),
+            ("Untranslated claims", "untranslatedClaims", "text"),
+        ):
+            items = [item[item_key] for item in translation.get(entries_key, []) if item.get(item_key)]
+            if items:
+                lines.append(f"{label}: {' | '.join(items)}")
         return lines
 
-    def _scenario_lines(self, scenario: Any) -> str | None:
+    @classmethod
+    def _format_scenario(cls, scenario: Any) -> str | None:
+        """Recursively format scenario statements into a pipe-delimited string."""
         if isinstance(scenario, dict):
-            statements = scenario.get("statements", [])
-            values = [item.get("naturalLanguage") for item in statements if item.get("naturalLanguage")]
-            if values:
-                return " | ".join(values)
+            values = [s["naturalLanguage"] for s in scenario.get("statements", []) if s.get("naturalLanguage")]
+            return " | ".join(values) if values else None
         if isinstance(scenario, list):
-            combined: list[str] = []
-            for item in scenario:
-                text = self._scenario_lines(item)
-                if text:
-                    combined.append(text)
-            if combined:
-                return " || ".join(combined)
+            parts = [cls._format_scenario(item) for item in scenario]
+            combined = [p for p in parts if p]
+            return " || ".join(combined) if combined else None
         return None

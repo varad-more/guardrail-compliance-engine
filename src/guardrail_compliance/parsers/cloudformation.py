@@ -11,6 +11,7 @@ from ..utils.exceptions import ParserError
 
 
 class CloudFormationParser(IaCParser):
+    """Parse AWS CloudFormation templates (JSON and YAML) into resource blocks."""
     def supports(self, file_path: Path) -> bool:
         suffix = file_path.suffix.lower()
         if suffix not in {".json", ".yaml", ".yml"}:

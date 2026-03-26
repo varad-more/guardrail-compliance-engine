@@ -1,6 +1,3 @@
-conda-env:
-	conda env create -f environment.yml || conda env update -f environment.yml --prune
-
 install:
 	python -m pip install -e '.[dev]'
 

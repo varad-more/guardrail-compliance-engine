@@ -10,16 +10,34 @@ from ..parsers.base import ResourceBlock
 
 @dataclass(slots=True)
 class NormalizedResource:
+    """Structured representation of a resource with extracted facts and a text narrative."""
+
     resource_type: str
     resource_name: str
     facts: dict[str, Any] = field(default_factory=dict)
     text: str = ""
 
 
+# Public access block flag names in both Terraform and CloudFormation conventions.
+_PAB_FLAGS_TF = ("block_public_acls", "block_public_policy", "ignore_public_acls", "restrict_public_buckets")
+_PAB_FLAGS_CFN = ("BlockPublicAcls", "BlockPublicPolicy", "IgnorePublicAcls", "RestrictPublicBuckets")
+
+
 class ResourceNormalizer:
-    """Build deterministic facts plus a Bedrock-friendly narrative for a resource."""
+    """Extracts deterministic facts from a parsed resource and builds a
+    Bedrock-friendly plain-text narrative.
+
+    Terraform uses snake_case property keys while CloudFormation uses PascalCase.
+    The ``_prop`` helper picks the right key automatically so each fact-builder
+    method only needs to be written once.
+    """
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def normalize(self, resource: ResourceBlock, resources_in_file: list[ResourceBlock]) -> NormalizedResource:
+        """Build a NormalizedResource with structured facts and narrative text."""
         facts = self._build_facts(resource, resources_in_file)
         return NormalizedResource(
             resource_type=resource.resource_type,
@@ -28,138 +46,144 @@ class ResourceNormalizer:
             text=self._facts_to_text(resource, facts),
         )
 
+    # ------------------------------------------------------------------
+    # Property access helpers
+    # ------------------------------------------------------------------
+
+    def _prop(self, resource: ResourceBlock, tf_key: str, cfn_key: str, default: Any = None) -> Any:
+        """Get a property using the correct key convention for the resource type."""
+        key = cfn_key if self._is_cfn(resource) else tf_key
+        return resource.properties.get(key, default)
+
+    def _dict_prop(self, d: dict[str, Any], tf_key: str, cfn_key: str, *, is_cfn: bool) -> Any:
+        """Like ``_prop`` but operates on an arbitrary dict (e.g. an ingress rule)."""
+        return d.get(cfn_key if is_cfn else tf_key)
+
+    @staticmethod
+    def _is_cfn(resource: ResourceBlock) -> bool:
+        """Return True if the resource uses CloudFormation naming conventions."""
+        return resource.resource_type.startswith("AWS::")
+
+    # ------------------------------------------------------------------
+    # Fact dispatching
+    # ------------------------------------------------------------------
+
     def _build_facts(self, resource: ResourceBlock, resources_in_file: list[ResourceBlock]) -> dict[str, Any]:
+        """Dispatch to the correct fact-builder based on resource type."""
         facts: dict[str, Any] = {
             "resource_type": resource.resource_type,
             "resource_name": resource.resource_name,
             "line_number": resource.line_number,
         }
 
-        if resource.resource_type in {"aws_s3_bucket", "AWS::S3::Bucket"}:
+        rt = resource.resource_type
+        if rt in {"aws_s3_bucket", "AWS::S3::Bucket"}:
             facts.update(self._s3_bucket_facts(resource, resources_in_file))
-        elif resource.resource_type in {"aws_s3_bucket_public_access_block", "AWS::S3::BucketPublicAccessBlock"}:
+        elif rt in {"aws_s3_bucket_public_access_block", "AWS::S3::BucketPublicAccessBlock"}:
             facts.update(self._s3_public_access_block_facts(resource))
-        elif resource.resource_type in {"aws_db_instance", "AWS::RDS::DBInstance"}:
+        elif rt in {"aws_db_instance", "AWS::RDS::DBInstance"}:
             facts.update(self._rds_instance_facts(resource))
-        elif resource.resource_type in {"aws_security_group", "AWS::EC2::SecurityGroup"}:
+        elif rt in {"aws_security_group", "AWS::EC2::SecurityGroup"}:
             facts.update(self._security_group_facts(resource))
-        elif resource.resource_type in {"Pod", "Deployment"}:
+        elif rt in {"aws_iam_account_password_policy", "AWS::IAM::AccountPasswordPolicy"}:
+            facts.update(self._password_policy_facts(resource))
+        elif rt in {"Pod", "Deployment"}:
             facts.update(self._kubernetes_workload_facts(resource))
         else:
             facts["properties"] = resource.properties
 
         return facts
 
+    # ------------------------------------------------------------------
+    # Per-resource-type fact builders
+    # ------------------------------------------------------------------
+
     def _s3_bucket_facts(self, resource: ResourceBlock, resources_in_file: list[ResourceBlock]) -> dict[str, Any]:
-        if resource.resource_type == "AWS::S3::Bucket":
-            bucket_name = resource.properties.get("BucketName")
-            acl = resource.properties.get("AccessControl", "Private")
-            encryption_block = resource.properties.get("BucketEncryption")
-            logging_block = resource.properties.get("LoggingConfiguration")
+        """Extract S3 bucket encryption, logging, ACL, and public access facts."""
+        is_cfn = self._is_cfn(resource)
+        bucket_name = self._prop(resource, "bucket", "BucketName")
+        acl = self._prop(resource, "acl", "AccessControl", "Private" if is_cfn else "private")
+        encryption_block = self._prop(resource, "server_side_encryption_configuration", "BucketEncryption")
+        logging_block = self._prop(resource, "logging", "LoggingConfiguration")
+
+        if is_cfn:
             public_access_config = resource.properties.get("PublicAccessBlockConfiguration")
             matched_pabs: list[ResourceBlock] = []
             public_access_present = bool(public_access_config)
-            public_access_all_enabled = self._cloudformation_public_access_enabled(public_access_config)
+            public_access_all_enabled = self._check_public_access_flags(public_access_config)
         else:
-            bucket_name = resource.properties.get("bucket")
-            acl = resource.properties.get("acl", "private")
-            pab_resources = [
-                item for item in resources_in_file if item.resource_type in {"aws_s3_bucket_public_access_block", "AWS::S3::BucketPublicAccessBlock"}
-            ]
-            matched_pabs = [item for item in pab_resources if self._matches_s3_bucket(item, resource)]
-            encryption_block = resource.properties.get("server_side_encryption_configuration")
-            logging_block = resource.properties.get("logging")
+            pab_types = {"aws_s3_bucket_public_access_block", "AWS::S3::BucketPublicAccessBlock"}
+            pab_resources = [r for r in resources_in_file if r.resource_type in pab_types]
+            matched_pabs = [r for r in pab_resources if self._matches_s3_bucket(r, resource)]
             public_access_present = bool(matched_pabs)
-            public_access_all_enabled = any(self._all_public_access_flags_enabled(item) for item in matched_pabs)
+            public_access_all_enabled = any(
+                self._check_public_access_flags(r.properties, is_cfn=False) for r in matched_pabs
+            )
 
         return {
             "bucket_name": bucket_name,
             "acl": acl,
             "encryption_configured": bool(encryption_block),
             "logging_configured": bool(logging_block),
-            "logging_target_bucket": self._extract_logging_target_bucket(logging_block),
+            "logging_target_bucket": self._extract_logging_target(logging_block),
             "public_access_block_present": public_access_present,
-            "public_access_block_resources": [item.resource_name for item in matched_pabs],
+            "public_access_block_resources": [r.resource_name for r in matched_pabs],
             "public_access_block_all_enabled": public_access_all_enabled,
             "properties": resource.properties,
         }
 
     def _s3_public_access_block_facts(self, resource: ResourceBlock) -> dict[str, Any]:
-        if resource.resource_type == "AWS::S3::BucketPublicAccessBlock":
-            bucket_ref = resource.properties.get("Bucket")
-            block_public_acls = self._bool_value(resource.properties.get("BlockPublicAcls"))
-            block_public_policy = self._bool_value(resource.properties.get("BlockPublicPolicy"))
-            ignore_public_acls = self._bool_value(resource.properties.get("IgnorePublicAcls"))
-            restrict_public_buckets = self._bool_value(resource.properties.get("RestrictPublicBuckets"))
-        else:
-            bucket_ref = resource.properties.get("bucket")
-            block_public_acls = self._bool_value(resource.properties.get("block_public_acls"))
-            block_public_policy = self._bool_value(resource.properties.get("block_public_policy"))
-            ignore_public_acls = self._bool_value(resource.properties.get("ignore_public_acls"))
-            restrict_public_buckets = self._bool_value(resource.properties.get("restrict_public_buckets"))
+        """Extract the four public-access-block boolean flags."""
+        bucket_ref = self._prop(resource, "bucket", "Bucket")
+        flags = {
+            name: self._bool_value(self._prop(resource, tf, cfn))
+            for name, tf, cfn in zip(
+                ("block_public_acls", "block_public_policy", "ignore_public_acls", "restrict_public_buckets"),
+                _PAB_FLAGS_TF,
+                _PAB_FLAGS_CFN,
+            )
+        }
         return {
             "bucket_reference": bucket_ref,
-            "block_public_acls": block_public_acls,
-            "block_public_policy": block_public_policy,
-            "ignore_public_acls": ignore_public_acls,
-            "restrict_public_buckets": restrict_public_buckets,
-            "all_public_access_blocks_enabled": all(
-                value is True
-                for value in [block_public_acls, block_public_policy, ignore_public_acls, restrict_public_buckets]
-            ),
+            **flags,
+            "all_public_access_blocks_enabled": all(v is True for v in flags.values()),
             "properties": resource.properties,
         }
 
     def _rds_instance_facts(self, resource: ResourceBlock) -> dict[str, Any]:
-        if resource.resource_type == "AWS::RDS::DBInstance":
-            engine = resource.properties.get("Engine")
-            instance_class = resource.properties.get("DBInstanceClass")
-            storage_encrypted = self._bool_value(resource.properties.get("StorageEncrypted"))
-            kms_key_configured = bool(resource.properties.get("KmsKeyId"))
-            publicly_accessible = self._bool_value(resource.properties.get("PubliclyAccessible"))
-        else:
-            engine = resource.properties.get("engine")
-            instance_class = resource.properties.get("instance_class")
-            storage_encrypted = self._bool_value(resource.properties.get("storage_encrypted"))
-            kms_key_configured = bool(resource.properties.get("kms_key_id"))
-            publicly_accessible = self._bool_value(resource.properties.get("publicly_accessible"))
+        """Extract RDS encryption, engine, and accessibility facts."""
         return {
-            "engine": engine,
-            "instance_class": instance_class,
-            "storage_encrypted": storage_encrypted,
-            "kms_key_configured": kms_key_configured,
-            "publicly_accessible": publicly_accessible,
+            "engine": self._prop(resource, "engine", "Engine"),
+            "instance_class": self._prop(resource, "instance_class", "DBInstanceClass"),
+            "storage_encrypted": self._bool_value(self._prop(resource, "storage_encrypted", "StorageEncrypted")),
+            "kms_key_configured": bool(self._prop(resource, "kms_key_id", "KmsKeyId")),
+            "publicly_accessible": self._bool_value(self._prop(resource, "publicly_accessible", "PubliclyAccessible")),
             "properties": resource.properties,
         }
 
     def _security_group_facts(self, resource: ResourceBlock) -> dict[str, Any]:
-        if resource.resource_type == "AWS::EC2::SecurityGroup":
-            ingress_rules = self._list_of_dicts(resource.properties.get("SecurityGroupIngress"))
-        else:
-            ingress_rules = self._list_of_dicts(resource.properties.get("ingress"))
+        """Analyse ingress rules to detect open SSH, public CIDRs, and port exposure."""
+        is_cfn = self._is_cfn(resource)
+        ingress_rules = self._list_of_dicts(self._prop(resource, "ingress", "SecurityGroupIngress"))
         public_ports: list[int | str] = []
         public_ranges: list[str] = []
         ssh_open = False
 
-        for ingress in ingress_rules:
-            if resource.resource_type == "AWS::EC2::SecurityGroup":
-                cidrs = self._ensure_list(ingress.get("CidrIp")) + self._ensure_list(ingress.get("CidrIpv6"))
-                from_port = self._int_value(ingress.get("FromPort"))
-                to_port = self._int_value(ingress.get("ToPort"))
-            else:
-                cidrs = self._ensure_list(ingress.get("cidr_blocks")) + self._ensure_list(ingress.get("ipv6_cidr_blocks"))
-                from_port = self._int_value(ingress.get("from_port"))
-                to_port = self._int_value(ingress.get("to_port"))
+        for rule in ingress_rules:
+            cidrs = (
+                self._ensure_list(self._dict_prop(rule, "cidr_blocks", "CidrIp", is_cfn=is_cfn))
+                + self._ensure_list(self._dict_prop(rule, "ipv6_cidr_blocks", "CidrIpv6", is_cfn=is_cfn))
+            )
+            from_port = self._int_value(self._dict_prop(rule, "from_port", "FromPort", is_cfn=is_cfn))
+            to_port = self._int_value(self._dict_prop(rule, "to_port", "ToPort", is_cfn=is_cfn))
+
             if not any(cidr in {"0.0.0.0/0", "::/0"} for cidr in cidrs):
                 continue
             if from_port is None or to_port is None:
                 public_ranges.append("unknown")
                 continue
             public_ranges.append(f"{from_port}-{to_port}")
-            if from_port == to_port:
-                public_ports.append(from_port)
-            else:
-                public_ports.append(f"{from_port}-{to_port}")
+            public_ports.append(from_port if from_port == to_port else f"{from_port}-{to_port}")
             if from_port <= 22 <= to_port:
                 ssh_open = True
 
@@ -171,119 +195,140 @@ class ResourceNormalizer:
             "properties": resource.properties,
         }
 
-    def _kubernetes_workload_facts(self, resource: ResourceBlock) -> dict[str, Any]:
-        spec = resource.properties.get("spec", {}) if isinstance(resource.properties.get("spec"), dict) else {}
-        template_spec = spec.get("template", {}).get("spec", {}) if isinstance(spec.get("template", {}), dict) else {}
-        pod_spec = template_spec if template_spec else spec
-        containers = pod_spec.get("containers", []) if isinstance(pod_spec.get("containers", []), list) else []
-        run_as_non_root = self._extract_security_value(pod_spec, containers, "runAsNonRoot")
-        privileged = self._extract_any_container_security_value(containers, "privileged")
-        service_account = pod_spec.get("serviceAccountName")
+    def _password_policy_facts(self, resource: ResourceBlock) -> dict[str, Any]:
+        """Extract IAM password-policy strength parameters."""
         return {
-            "container_count": len(containers),
-            "run_as_non_root": run_as_non_root,
-            "privileged": privileged,
-            "service_account_name": service_account,
+            "minimum_length": self._int_value(self._prop(resource, "minimum_password_length", "MinimumPasswordLength")),
+            "require_upper": self._bool_value(self._prop(resource, "require_uppercase_characters", "RequireUppercaseCharacters")),
+            "require_lower": self._bool_value(self._prop(resource, "require_lowercase_characters", "RequireLowercaseCharacters")),
+            "require_numbers": self._bool_value(self._prop(resource, "require_numbers", "RequireNumbers")),
+            "require_symbols": self._bool_value(self._prop(resource, "require_symbols", "RequireSymbols")),
+            "reuse_prevention": self._int_value(self._prop(resource, "password_reuse_prevention", "PasswordReusePrevention")),
             "properties": resource.properties,
         }
 
+    def _kubernetes_workload_facts(self, resource: ResourceBlock) -> dict[str, Any]:
+        """Extract container count, privilege escalation, and service account facts."""
+        spec = self._safe_dict(resource.properties, "spec")
+        template_spec = self._safe_dict(self._safe_dict(spec, "template"), "spec")
+        pod_spec = template_spec or spec
+        containers = pod_spec.get("containers", []) if isinstance(pod_spec.get("containers"), list) else []
+        return {
+            "container_count": len(containers),
+            "run_as_non_root": self._extract_security_value(pod_spec, containers, "runAsNonRoot"),
+            "privileged": self._extract_any_container_security_value(containers, "privileged"),
+            "service_account_name": pod_spec.get("serviceAccountName"),
+            "properties": resource.properties,
+        }
+
+    # ------------------------------------------------------------------
+    # Narrative text builder
+    # ------------------------------------------------------------------
+
     def _facts_to_text(self, resource: ResourceBlock, facts: dict[str, Any]) -> str:
-        summary_lines = [
+        """Render facts as a Bedrock-friendly plain-text narrative."""
+        lines = [
             f"Resource type: {resource.resource_type}",
             f"Resource name: {resource.resource_name}",
         ]
         if resource.line_number is not None:
-            summary_lines.append(f"Declared at line: {resource.line_number}")
+            lines.append(f"Declared at line: {resource.line_number}")
 
+        skip = {"properties", "resource_type", "resource_name", "line_number"}
         for key, value in facts.items():
-            if key in {"properties", "resource_type", "resource_name", "line_number"}:
-                continue
-            label = key.replace("_", " ").capitalize()
-            summary_lines.append(f"{label}: {value}")
+            if key not in skip:
+                lines.append(f"{key.replace('_', ' ').capitalize()}: {value}")
 
-        summary_lines.append("Properties:")
-        summary_lines.append(yaml.safe_dump(resource.properties, sort_keys=True).strip())
-        return "\n".join(summary_lines)
+        lines.append("Properties:")
+        lines.append(yaml.safe_dump(resource.properties, sort_keys=True).strip())
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # S3 helpers
+    # ------------------------------------------------------------------
 
     def _matches_s3_bucket(self, pab_resource: ResourceBlock, bucket_resource: ResourceBlock) -> bool:
+        """Check whether a public-access-block resource is associated with a given bucket."""
         bucket_ref = str(pab_resource.properties.get("bucket", "")).strip()
         bucket_name = str(bucket_resource.properties.get("bucket", "")).strip()
 
         if not bucket_ref:
             return pab_resource.resource_name == bucket_resource.resource_name
-        if bucket_ref == bucket_name:
-            return True
-        if bucket_resource.resource_name and bucket_resource.resource_name in bucket_ref:
-            return True
-        if bucket_name and bucket_name in bucket_ref:
-            return True
-        return False
+        return (
+            bucket_ref == bucket_name
+            or (bool(bucket_resource.resource_name) and bucket_resource.resource_name in bucket_ref)
+            or (bool(bucket_name) and bucket_name in bucket_ref)
+        )
 
-    def _extract_logging_target_bucket(self, logging_block: Any) -> Any:
+    def _extract_logging_target(self, logging_block: Any) -> Any:
+        """Pull the target bucket from a logging configuration block."""
         blocks = self._list_of_dicts(logging_block)
-        if not blocks:
-            return None
-        return blocks[0].get("target_bucket")
+        return blocks[0].get("target_bucket") if blocks else None
 
-    def _all_public_access_flags_enabled(self, resource: ResourceBlock) -> bool:
-        required = [
-            self._bool_value(resource.properties.get("block_public_acls")),
-            self._bool_value(resource.properties.get("block_public_policy")),
-            self._bool_value(resource.properties.get("ignore_public_acls")),
-            self._bool_value(resource.properties.get("restrict_public_buckets")),
-        ]
-        return all(value is True for value in required)
-
-    def _cloudformation_public_access_enabled(self, config: Any) -> bool:
+    def _check_public_access_flags(self, config: Any, *, is_cfn: bool = True) -> bool:
+        """Return True only if all four public-access-block flags are explicitly True."""
         if not isinstance(config, dict):
             return False
-        required = [
-            self._bool_value(config.get("BlockPublicAcls")),
-            self._bool_value(config.get("BlockPublicPolicy")),
-            self._bool_value(config.get("IgnorePublicAcls")),
-            self._bool_value(config.get("RestrictPublicBuckets")),
-        ]
-        return all(value is True for value in required)
+        keys = _PAB_FLAGS_CFN if is_cfn else _PAB_FLAGS_TF
+        return all(self._bool_value(config.get(k)) is True for k in keys)
+
+    # ------------------------------------------------------------------
+    # Kubernetes helpers
+    # ------------------------------------------------------------------
 
     def _extract_security_value(self, pod_spec: dict[str, Any], containers: list[dict[str, Any]], key: str) -> Any:
-        pod_security = pod_spec.get("securityContext", {}) if isinstance(pod_spec.get("securityContext"), dict) else {}
+        """Look up a securityContext field, checking pod-level first then each container."""
+        pod_security = self._safe_dict(pod_spec, "securityContext")
         if key in pod_security:
-            return pod_security.get(key)
+            return pod_security[key]
         return self._extract_any_container_security_value(containers, key)
 
     def _extract_any_container_security_value(self, containers: list[dict[str, Any]], key: str) -> Any:
+        """Return the first container-level securityContext value matching *key*."""
         for container in containers:
-            security = container.get("securityContext", {}) if isinstance(container.get("securityContext"), dict) else {}
+            security = self._safe_dict(container, "securityContext")
             if key in security:
-                return security.get(key)
+                return security[key]
         return None
 
-    def _bool_value(self, value: Any) -> bool | None:
+    # ------------------------------------------------------------------
+    # Type coercion utilities
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _safe_dict(parent: dict[str, Any], key: str) -> dict[str, Any]:
+        """Get a nested dict, returning ``{}`` if the value is not a dict."""
+        value = parent.get(key)
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _bool_value(value: Any) -> bool | None:
+        """Coerce a value to bool, returning None if it cannot be interpreted."""
         if isinstance(value, bool):
             return value
         if isinstance(value, str):
-            lowered = value.lower()
-            if lowered == "true":
-                return True
-            if lowered == "false":
-                return False
+            return {"true": True, "false": False}.get(value.lower())
         return None
 
-    def _list_of_dicts(self, value: Any) -> list[dict[str, Any]]:
+    @staticmethod
+    def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
+        """Normalise a value into a list of dicts (handles single dict or list)."""
         if isinstance(value, list):
             return [item for item in value if isinstance(item, dict)]
         if isinstance(value, dict):
             return [value]
         return []
 
-    def _ensure_list(self, value: Any) -> list[Any]:
+    @staticmethod
+    def _ensure_list(value: Any) -> list[Any]:
+        """Wrap a scalar in a list; pass through lists unchanged; treat None as empty."""
         if value is None:
             return []
-        if isinstance(value, list):
-            return value
-        return [value]
+        return value if isinstance(value, list) else [value]
 
-    def _int_value(self, value: Any) -> int | None:
+    @staticmethod
+    def _int_value(value: Any) -> int | None:
+        """Coerce a value to int, returning None on failure."""
         try:
             return int(value)
         except (TypeError, ValueError):
