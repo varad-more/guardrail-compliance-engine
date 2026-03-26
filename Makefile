@@ -1,11 +1,14 @@
+conda-env:
+	conda env create -f environment.yml || conda env update -f environment.yml --prune
+
 install:
-	uv sync --extra dev
+	python -m pip install -e '.[dev]'
 
 test:
-	uv run pytest
+	python -m pytest
 
 scan-example:
-	uv run guardrail scan examples/terraform/noncompliant-s3.tf --policy soc2-basic
+	guardrail scan examples/terraform/noncompliant-s3.tf --policy soc2-basic --no-bedrock
 
 smoke-bedrock:
-	uv run python scripts/bedrock_smoke.py
+	python scripts/bedrock_smoke.py

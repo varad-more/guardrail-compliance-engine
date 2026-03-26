@@ -58,25 +58,79 @@ That gives you:
 - explainable scans
 - a cleaner path for Bedrock evaluation later
 
+## Inference flow
+
+The engine evaluates infrastructure in two layers:
+
+1. **Parse** raw IaC into resource objects.
+2. **Normalize** those resources into deterministic facts plus a Bedrock-friendly narrative.
+3. **Infer locally** using built-in compliance evaluators for common controls.
+4. **Infer with Bedrock** when enabled by sending normalized content through Bedrock Guardrails and linked Automated Reasoning policies.
+5. **Merge findings** into a single report format.
+
+That split matters because it keeps the core scan explainable even when Bedrock is unavailable, and it makes the final result easier to audit than dumping raw HCL/YAML into a model-shaped void.
+
 ---
 
 ## Installation
 
+### 1) Clone the repo
+
 ```bash
-uv venv .venv
-source .venv/bin/activate
-uv pip install -e '.[dev]'
+git clone https://github.com/varad-more/guardrail-compliance-engine.git
+cd guardrail-compliance-engine
 ```
 
-Verify the install:
+### 2) Install Conda if you do not already have it
+
+#### macOS
+
+```bash
+brew install --cask miniconda
+conda init zsh
+```
+
+#### Linux (Miniconda)
+
+```bash
+mkdir -p "$HOME/.local"
+curl -fsSL "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh" -o /tmp/miniconda.sh
+bash /tmp/miniconda.sh -b -p "$HOME/.local/miniconda3"
+"$HOME/.local/miniconda3/bin/conda" init bash
+```
+
+Restart your shell after `conda init`, or source your shell rc file.
+
+### 3) Create and activate the Conda environment
+
+```bash
+conda env create -f environment.yml
+conda activate guardrail-compliance-engine
+```
+
+If the environment already exists, update it with:
+
+```bash
+conda env update -f environment.yml --prune
+conda activate guardrail-compliance-engine
+```
+
+### 4) Verify the install
 
 ```bash
 pytest
+guardrail --help
 ```
 
 ---
 
 ## Fast local testing
+
+Assume the Conda environment is already active:
+
+```bash
+conda activate guardrail-compliance-engine
+```
 
 If you want to test the project **without AWS hookup**, use the bundled examples.
 
@@ -154,6 +208,25 @@ Use:
 
 - `us-east-1`
 
+### Install AWS CLI
+
+If you do not already have the AWS CLI, install it before trying live Bedrock commands.
+
+#### macOS
+
+```bash
+brew install awscli
+```
+
+#### Linux (AWS CLI v2)
+
+```bash
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+aws --version
+```
+
 ### Prerequisites
 
 You need:
@@ -169,6 +242,14 @@ You need:
 
 ### Minimal environment setup
 
+Configure AWS credentials first:
+
+```bash
+aws configure
+```
+
+Then set the region used by the repo:
+
 ```bash
 export AWS_REGION=us-east-1
 export AWS_DEFAULT_REGION=us-east-1
@@ -178,9 +259,33 @@ export AWS_PROFILE=your-profile
 Optional sanity checks:
 
 ```bash
+aws --version
 aws sts get-caller-identity
 aws bedrock list-guardrails --region us-east-1
 ```
+
+### Approximate AWS cost expectations
+
+Use this as a **rough testing budget**, not a pricing contract.
+
+- **Local mode (`--no-bedrock`)**: effectively **$0 AWS cost**. Parsing, normalization, local evaluation, and report generation stay on your machine.
+- **AWS CLI install / `aws configure` / basic identity checks**: effectively **$0 to negligible**.
+- **Small live smoke test with existing Bedrock setup**: usually **cents**, and typically **under $1** for a couple of small example runs.
+- **Creating / iterating on Automated Reasoning policies**: can move from **cents into low single-digit dollars** if you repeat builds, versioning, exports, and live scans a few times.
+- **Heavier experimentation** (many runs, larger source documents, repeated policy rebuilds): budget **around $5–$20** so you do not get surprised.
+
+What drives cost the most:
+
+- how many live Bedrock requests you make
+- size of the infrastructure input / normalized content
+- number of Automated Reasoning build iterations
+- region and current Amazon Bedrock pricing
+
+Safest rule: do local work first with `--no-bedrock`, then switch to live Bedrock only for final validation.
+
+For current pricing, check the official Amazon Bedrock pricing page:
+
+- <https://aws.amazon.com/bedrock/pricing/>
 
 ### IAM permissions
 
@@ -335,6 +440,44 @@ guardrail scan examples/terraform/noncompliant-s3.tf \
 
 ---
 
+## Running the repo
+
+### Local-only run (no AWS required)
+
+```bash
+guardrail scan examples/terraform/noncompliant-s3.tf \
+  --policy soc2-basic \
+  --no-bedrock
+```
+
+### Local explain run
+
+```bash
+guardrail scan examples/terraform/noncompliant-s3.tf \
+  --policy soc2-basic \
+  --no-bedrock \
+  --explain
+```
+
+### Live Bedrock smoke run
+
+This checks whether your local AWS setup can talk to Bedrock for the integration path:
+
+```bash
+make smoke-bedrock
+```
+
+### Live policy + scan flow
+
+```bash
+guardrail policy ar-list --region us-east-1
+guardrail policy sync --policy-dir policies --region us-east-1
+guardrail scan examples/terraform/noncompliant-s3.tf \
+  --policy soc2-basic \
+  --policy-dir policies \
+  --region us-east-1
+```
+
 ## CLI quick reference
 
 ```bash
@@ -462,3 +605,12 @@ If you want to keep pushing it, the highest-value follow-ups are:
 2. better Terraform cross-file/module correlation
 3. richer PR summary/comment generation
 4. stronger policy-authoring UX for Automated Reasoning source material
+
+---
+
+## Final notes
+
+- **Local mode is first-class**: you can parse, normalize, evaluate, and generate reports without touching AWS.
+- **Bedrock mode is the real integration proof**: use it when you want live Guardrails and Automated Reasoning validation, not just deterministic checks.
+- **AWS CLI setup matters**: most live run failures are not code bugs; they are usually missing credentials, missing region config, missing Bedrock access, or missing IAM permissions.
+- **Recommended release gate**: before tagging, run local tests, build artifacts, and at least one successful live Bedrock smoke/integration pass in a real AWS account.
