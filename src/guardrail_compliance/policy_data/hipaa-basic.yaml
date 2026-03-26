@@ -1,0 +1,58 @@
+name: hipaa-basic
+version: "0.1.0"
+framework: HIPAA
+description: >-
+  Starter HIPAA-focused infrastructure controls covering encryption, logging,
+  access restrictions, backups, and public exposure.
+rules:
+  - id: HIPAA-ENC-001
+    title: Protected data stores must be encrypted
+    description: Datastores that may contain PHI must be encrypted at rest.
+    severity: HIGH
+    resource_types:
+      - aws_db_instance
+      - AWS::RDS::DBInstance
+    constraint: Protected data stores MUST enable encryption at rest.
+    remediation: Enable storage encryption and configure a KMS key.
+
+  - id: HIPAA-LOG-001
+    title: S3 access logs must be enabled
+    description: Object stores that hold audit or patient-related artifacts must be logged.
+    severity: MEDIUM
+    resource_types:
+      - aws_s3_bucket
+      - AWS::S3::Bucket
+    constraint: Storage buckets MUST enable access logging.
+    remediation: Add logging configuration with a central target bucket.
+
+  - id: HIPAA-NET-001
+    title: No public SSH ingress for regulated workloads
+    description: Infrastructure serving regulated workloads must not expose SSH publicly.
+    severity: CRITICAL
+    resource_types:
+      - aws_security_group
+      - AWS::EC2::SecurityGroup
+    constraint: Security groups MUST NOT expose port 22 to 0.0.0.0/0 or ::/0.
+    remediation: Restrict SSH to administrative CIDRs or private access paths.
+
+  - id: HIPAA-ENC-002
+    title: S3 buckets must not be publicly readable
+    description: Buckets storing regulated artifacts must block public access.
+    severity: CRITICAL
+    resource_types:
+      - aws_s3_bucket
+      - aws_s3_bucket_public_access_block
+      - AWS::S3::Bucket
+      - AWS::S3::BucketPublicAccessBlock
+    constraint: S3 public access MUST be blocked for regulated data stores.
+    remediation: Enable all public access block settings.
+
+  - id: HIPAA-BKP-001
+    title: RDS backups must be retained
+    description: Databases should retain automated backups to support recovery.
+    severity: HIGH
+    resource_types:
+      - aws_db_instance
+      - AWS::RDS::DBInstance
+    constraint: Databases MUST configure a positive backup retention period.
+    remediation: Configure backup retention and backup windows.

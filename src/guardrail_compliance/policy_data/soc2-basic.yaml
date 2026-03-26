@@ -1,0 +1,70 @@
+name: soc2-basic
+version: "0.1.0"
+framework: SOC 2 Type II
+description: >-
+  Starter SOC 2 controls for a Terraform-first MVP. These rules are implemented
+  locally first and can later be mapped to Bedrock Automated Reasoning policies.
+confidence_threshold: 0.8
+cross_region_profile: us.guardrail.v1:0
+rules:
+  - id: SOC2-ENC-001
+    title: S3 Encryption at Rest
+    description: All S3 buckets must have server-side encryption enabled.
+    severity: HIGH
+    resource_types:
+      - aws_s3_bucket
+      - AWS::S3::Bucket
+    constraint: >-
+      S3 bucket configurations MUST include server-side encryption.
+    remediation: >-
+      Add a server_side_encryption_configuration block with AES256 or aws:kms.
+
+  - id: SOC2-LOG-001
+    title: S3 Access Logging
+    description: All S3 buckets must have access logging enabled.
+    severity: MEDIUM
+    resource_types:
+      - aws_s3_bucket
+      - AWS::S3::Bucket
+    constraint: >-
+      S3 buckets MUST include logging configuration with a target bucket.
+    remediation: >-
+      Add a logging block that points to a dedicated log bucket.
+
+  - id: SOC2-NET-001
+    title: No Public S3 Buckets
+    description: S3 buckets must not be publicly accessible.
+    severity: CRITICAL
+    resource_types:
+      - aws_s3_bucket
+      - aws_s3_bucket_public_access_block
+      - AWS::S3::Bucket
+      - AWS::S3::BucketPublicAccessBlock
+    constraint: >-
+      S3 buckets MUST have public access blocked.
+    remediation: >-
+      Add public access blocking with all four flags set to true.
+
+  - id: SOC2-ENC-002
+    title: RDS Encryption at Rest
+    description: RDS instances must have storage encryption enabled and use KMS.
+    severity: HIGH
+    resource_types:
+      - aws_db_instance
+      - AWS::RDS::DBInstance
+    constraint: >-
+      RDS instance configurations MUST set storage_encrypted to true and specify a kms_key_id.
+    remediation: >-
+      Enable storage encryption and supply a customer-managed KMS key.
+
+  - id: SOC2-NET-002
+    title: No Unrestricted Security Group Ingress
+    description: Security groups must not allow unrestricted inbound access except HTTPS.
+    severity: CRITICAL
+    resource_types:
+      - aws_security_group
+      - AWS::EC2::SecurityGroup
+    constraint: >-
+      Security group ingress rules MUST NOT expose SSH to the internet and SHOULD only expose 443 publicly.
+    remediation: >-
+      Restrict public CIDRs or remove internet exposure for non-HTTPS ports.

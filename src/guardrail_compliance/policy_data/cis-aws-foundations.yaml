@@ -1,0 +1,56 @@
+name: cis-aws-foundations
+version: "0.1.0"
+framework: CIS AWS Foundations
+description: >-
+  Starter CIS AWS Foundations controls targeting password policy strength,
+  storage encryption, logging, and network restrictions.
+rules:
+  - id: CIS-IAM-001
+    title: IAM password policy must be strong
+    description: Account-level password policy should meet CIS-style minimums.
+    severity: HIGH
+    resource_types:
+      - aws_iam_account_password_policy
+      - AWS::IAM::AccountPasswordPolicy
+    constraint: IAM password policies MUST meet minimum complexity requirements.
+    remediation: Enforce strong password length, reuse prevention, and complexity.
+
+  - id: CIS-S3-001
+    title: S3 buckets should be encrypted
+    description: Buckets should enable server-side encryption.
+    severity: HIGH
+    resource_types:
+      - aws_s3_bucket
+      - AWS::S3::Bucket
+    constraint: Buckets MUST enable encryption at rest.
+    remediation: Add encryption configuration to the bucket.
+
+  - id: CIS-S3-002
+    title: S3 buckets should enable logging
+    description: Buckets should emit access logs for traceability.
+    severity: MEDIUM
+    resource_types:
+      - aws_s3_bucket
+      - AWS::S3::Bucket
+    constraint: Buckets SHOULD enable logging.
+    remediation: Add logging configuration.
+
+  - id: CIS-NET-001
+    title: Security groups should restrict public SSH
+    description: Security groups should not expose SSH to the internet.
+    severity: CRITICAL
+    resource_types:
+      - aws_security_group
+      - AWS::EC2::SecurityGroup
+    constraint: Security groups MUST NOT expose port 22 publicly.
+    remediation: Restrict SSH ingress to trusted networks.
+
+  - id: CIS-RDS-001
+    title: RDS should use encryption with KMS
+    description: Databases should be encrypted at rest using KMS.
+    severity: HIGH
+    resource_types:
+      - aws_db_instance
+      - AWS::RDS::DBInstance
+    constraint: Databases MUST enable storage encryption and configure KMS.
+    remediation: Set storage encryption and a KMS key.

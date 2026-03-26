@@ -1,0 +1,13 @@
+name: custom-example
+version: "0.1.0"
+framework: Custom
+description: Example of a user-defined policy file.
+rules:
+  - id: CUSTOM-001
+    title: Example custom rule
+    description: Replace this with a real control.
+    severity: LOW
+    resource_types:
+      - aws_s3_bucket
+    constraint: Example constraint text.
+    remediation: Example remediation text.

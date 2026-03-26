@@ -15,6 +15,14 @@ def test_policy_list_command(project_root: Path) -> None:
 
 
 
+def test_policy_list_command_uses_bundled_defaults() -> None:
+    result = runner.invoke(app, ["policy", "list"])
+
+    assert result.exit_code == 0
+    assert "soc2-basic" in result.stdout
+
+
+
 def test_scan_command_json_output(project_root: Path) -> None:
     result = runner.invoke(
         app,

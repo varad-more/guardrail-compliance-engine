@@ -125,5 +125,10 @@ class PolicyRegistry:
 
     @classmethod
     def default(cls) -> "PolicyRegistry":
+        package_root = Path(__file__).resolve().parents[1]
+        bundled_policy_dir = package_root / "policy_data"
+        if bundled_policy_dir.exists():
+            return cls(bundled_policy_dir)
+
         project_root = Path(__file__).resolve().parents[3]
         return cls(project_root / "policies")
