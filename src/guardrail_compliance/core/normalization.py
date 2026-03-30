@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 import yaml
 
 from ..parsers.base import ResourceBlock
+from ..utils.secrets import redact_secrets
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -141,6 +145,7 @@ class ResourceNormalizer:
                 ("block_public_acls", "block_public_policy", "ignore_public_acls", "restrict_public_buckets"),
                 _PAB_FLAGS_TF,
                 _PAB_FLAGS_CFN,
+                strict=True,
             )
         }
         return {
@@ -241,7 +246,14 @@ class ResourceNormalizer:
 
         lines.append("Properties:")
         lines.append(yaml.safe_dump(resource.properties, sort_keys=True).strip())
-        return "\n".join(lines)
+        raw_text = "\n".join(lines)
+        redacted, detected = redact_secrets(raw_text)
+        if detected:
+            log.warning(
+                "Redacted potential secret(s) from %s/%s before sending to Bedrock: %s",
+                resource.resource_type, resource.resource_name, ", ".join(detected),
+            )
+        return redacted
 
     # ------------------------------------------------------------------
     # S3 helpers

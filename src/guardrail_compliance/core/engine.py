@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
-from .guardrail_client import BedrockGuardrailClient
-from .models import Finding, ResourceEvaluation, ScanResult
-from .normalization import NormalizedResource, ResourceNormalizer
 from ..parsers import CloudFormationParser, KubernetesParser, TerraformParser
 from ..parsers.base import IaCParser, ResourceBlock
 from ..policies.registry import PolicyDefinition, PolicyRegistry, PolicyRule
 from ..utils.config import EngineConfig
 from ..utils.exceptions import ParserError
+from .guardrail_client import BedrockGuardrailClient
+from .models import Finding, ResourceEvaluation, ScanResult
+from .normalization import NormalizedResource, ResourceNormalizer
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Generic keyword routing table
@@ -84,8 +87,11 @@ class ComplianceEngine:
 
     async def scan(self, file_path: Path) -> ScanResult:
         """Parse a single file and evaluate all matched policy rules."""
+        log.info("Scanning %s", file_path)
         parser = self._detect_parser(file_path)
+        log.debug("Using parser %s for %s", parser.__class__.__name__, file_path)
         resources = parser.parse(file_path)
+        log.debug("Parsed %d resource(s) from %s", len(resources), file_path)
         selected = self.config.selected_policies or [p.name for p in self.policy_registry.all()]
         evaluations: list[ResourceEvaluation] = []
 
@@ -114,7 +120,9 @@ class ComplianceEngine:
                 )
             )
 
-        return ScanResult(file_path=file_path, parser=parser.__class__.__name__, resources=evaluations)
+        result = ScanResult(file_path=file_path, parser=parser.__class__.__name__, resources=evaluations)
+        log.info("Scan complete: %s — %d resource(s), %d finding(s)", file_path, len(result.resources), result.total_findings)
+        return result
 
     async def scan_directory(self, dir_path: Path, recursive: bool = True) -> list[ScanResult]:
         """Scan all supported IaC files in a directory."""
@@ -137,6 +145,10 @@ class ComplianceEngine:
         rules: list[PolicyRule],
     ) -> list[Finding]:
         """Send normalised text to Bedrock for automated reasoning evaluation."""
+        log.debug(
+            "Evaluating %s/%s via Bedrock guardrail %s (policy=%s)",
+            resource.resource_type, resource.resource_name, policy.guardrail_id, policy.name,
+        )
         client = self._client_cache.setdefault(
             (policy.guardrail_id or "", policy.guardrail_version),
             BedrockGuardrailClient(

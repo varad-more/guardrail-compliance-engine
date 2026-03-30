@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from .models import AutomatedReasoningPolicyInfo, GuardrailInfo
 from ..policies.registry import PolicyRegistry
 from ..utils.exceptions import GuardrailComplianceError, PolicyValidationError
+from .models import AutomatedReasoningPolicyInfo, GuardrailInfo
+
+log = logging.getLogger(__name__)
 
 
 class PolicyManager:
@@ -27,6 +30,7 @@ class PolicyManager:
         if not policy_arns:
             raise PolicyValidationError("policy_config must include at least one versioned Automated Reasoning policy ARN")
 
+        log.info("Creating Bedrock guardrail: %s", name)
         response = self.client.create_guardrail(
             name=name,
             description=policy_config.get("description", f"Compliance policy guardrail: {name}"),
@@ -41,7 +45,9 @@ class PolicyManager:
             blockedOutputsMessaging=policy_config.get("blocked_output_message", "COMPLIANCE_REVIEW_REQUIRED"),
             tags=self._tag_list(policy_config.get("tags") or {"compliance-engine": "true"}),
         )
-        return response["guardrailId"]
+        guardrail_id = response["guardrailId"]
+        log.info("Created guardrail %s → id=%s", name, guardrail_id)
+        return guardrail_id
 
     def sync_policies(self, policy_dir: Path) -> dict[str, str]:
         """Sync local policy YAML files to Bedrock guardrails; return {name: guardrail_id}."""

@@ -5,7 +5,6 @@ from guardrail_compliance.core.engine import ComplianceEngine
 from guardrail_compliance.utils.config import EngineConfig
 
 
-
 def test_cis_policy_evaluates_weak_password_policy(project_root: Path) -> None:
     engine = ComplianceEngine(
         EngineConfig(policy_dir=project_root / "policies", selected_policies=["cis-aws-foundations"], use_bedrock=False)

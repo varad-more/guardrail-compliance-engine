@@ -16,6 +16,7 @@ from .policies.registry import PolicyRegistry
 from .reporting import build_html_report, build_json_report, build_sarif_report, render_scan_results
 from .utils.config import EngineConfig
 from .utils.exceptions import GuardrailComplianceError, PolicyValidationError
+from .utils.logging_config import setup_logging
 
 app = typer.Typer(help="GuardRail Compliance Engine")
 policy_app = typer.Typer(help="Policy management commands")
@@ -39,8 +40,10 @@ def scan(
     use_bedrock: bool = typer.Option(True, "--bedrock/--no-bedrock", help="Use Bedrock for guardrail-bound policies."),
     explain: bool = typer.Option(False, "--explain", help="Show normalised facts in console output."),
     fail_on_findings: bool = typer.Option(False, "--fail-on-findings/--no-fail-on-findings", help="Exit non-zero on failures."),
+    log_level: str = typer.Option("WARNING", "--log-level", help="Logging level: DEBUG, INFO, WARNING, ERROR."),
 ) -> None:
     """Scan IaC files against configured compliance policies."""
+    setup_logging(log_level)
     results = _run_scan(path=path, policies=policy, format=format, recursive=recursive,
                         region=region, policy_dir=policy_dir, use_bedrock=use_bedrock)
     _emit_output(results, format=format, output=output, explain=explain)
@@ -58,8 +61,10 @@ def audit(
     region: str = typer.Option("us-east-1", "--region"),
     policy_dir: Path = typer.Option(Path("policies"), "--policy-dir"),
     use_bedrock: bool = typer.Option(True, "--bedrock/--no-bedrock"),
+    log_level: str = typer.Option("WARNING", "--log-level", help="Logging level: DEBUG, INFO, WARNING, ERROR."),
 ) -> None:
     """Run a multi-framework compliance audit."""
+    setup_logging(log_level)
     registry = PolicyRegistry(_resolve_policy_dir(policy_dir))
     wanted = [t.strip() for t in frameworks.split(",") if t.strip()]
     selected: list[str] = []

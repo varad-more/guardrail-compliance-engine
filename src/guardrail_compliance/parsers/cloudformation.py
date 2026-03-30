@@ -6,8 +6,8 @@ from typing import Any
 
 import yaml
 
-from .base import IaCParser, ResourceBlock
 from ..utils.exceptions import ParserError
+from .base import IaCParser, ResourceBlock
 
 
 class CloudFormationParser(IaCParser):

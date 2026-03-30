@@ -1,130 +1,61 @@
 # GuardRail Compliance Engine
 
-A compliance scanner for Terraform, CloudFormation, and Kubernetes that can run locally or connect to AWS Bedrock Guardrails for Automated Reasoning validation.
+Scan Terraform, CloudFormation, and Kubernetes files for compliance violations — locally in seconds, or using AWS Bedrock Guardrails for Automated Reasoning validation.
 
-It parses your infrastructure files, normalizes each resource into structured facts and a plain text narrative, then checks them against policy rules. It ships with starter policy packs for SOC 2, CIS AWS Foundations, PCI DSS, and HIPAA and can output results as a console tree, JSON, SARIF, or a standalone HTML report.
-
-### Console output
-
-<!-- Replace with a terminal screenshot for the colored version: -->
-<!-- ![Console scan output](docs/assets/console-output.png) -->
-
-```bash
-guardrail scan examples/ --policy soc2-basic --no-bedrock
-```
-
-```
-examples/cloudformation/compliant-stack.yaml (CloudFormationParser)
-└── AWS::S3::Bucket.LogsBucket
-    ├── PASS  SOC2-ENC-001  S3 Encryption at Rest
-    ├── PASS  SOC2-LOG-001  S3 Access Logging
-    └── PASS  SOC2-NET-001  No Public S3 Buckets
-
-examples/cloudformation/noncompliant-stack.yaml (CloudFormationParser)
-├── AWS::S3::Bucket.PublicBucket
-│   ├── FAIL  SOC2-ENC-001  S3 Encryption at Rest — No encryption configuration found.
-│   ├── FAIL  SOC2-LOG-001  S3 Access Logging — Bucket logging is missing.
-│   └── FAIL  SOC2-NET-001  No Public S3 Buckets — Bucket ACL is explicitly public: publicread.
-└── AWS::EC2::SecurityGroup.WebSecurityGroup
-    └── FAIL  SOC2-NET-002  No Unrestricted Security Group Ingress — SSH is open to the internet.
-
-examples/terraform/compliant-s3.tf (TerraformParser)
-├── aws_s3_bucket.logs
-│   ├── PASS  SOC2-ENC-001  S3 Encryption at Rest
-│   ├── PASS  SOC2-LOG-001  S3 Access Logging
-│   └── PASS  SOC2-NET-001  No Public S3 Buckets
-└── aws_s3_bucket_public_access_block.logs
-    └── PASS  SOC2-NET-001  No Public S3 Buckets
-
-examples/terraform/noncompliant-s3.tf (TerraformParser)
-├── aws_s3_bucket.data_lake
-│   ├── FAIL  SOC2-ENC-001  S3 Encryption at Rest — No encryption configuration found.
-│   ├── FAIL  SOC2-LOG-001  S3 Access Logging — Bucket logging is missing.
-│   └── FAIL  SOC2-NET-001  No Public S3 Buckets — Bucket ACL is explicitly public: public-read.
-└── aws_security_group.web
-    └── FAIL  SOC2-NET-002  No Unrestricted Security Group Ingress — SSH is open to the internet.
-
-Files scanned: 10 | Passed: 8 | Failed: 9 | Warnings: 0
-```
-
-### HTML report
-
-You can also generate a standalone HTML report with a visual compliance score:
-
-```bash
-guardrail scan examples/ --policy soc2-basic --no-bedrock --format html --output report.html
-```
-
-<!-- Replace with a screenshot of the HTML report: -->
-<!-- ![HTML compliance report](docs/assets/html-report.png) -->
-
-The HTML report includes a donut chart, per file breakdowns, finding details with remediation guidance, and works on its own without any external dependencies.
+**New to the project? Start here:** [Quick Start](#quick-start) → [First Scan](#first-scan) → [Understanding Results](#understanding-results)
 
 ---
 
-## Table of Contents
+## What it does
 
-- [Features](#features)
-- [Quick Start](#quick-start)
-- [Usage](#usage)
-  - [Scanning](#scanning)
-  - [Auditing by Framework](#auditing-by-framework)
-  - [Output Formats](#output-formats)
-  - [Explain Mode](#explain-mode)
-  - [CI Integration](#ci-integration)
-- [Policy System](#policy-system)
-  - [Built in Policies](#built-in-policies)
-  - [Writing Custom Policies](#writing-custom-policies)
-  - [Policy Commands](#policy-commands)
-- [AWS Bedrock Integration](#aws-bedrock-integration)
-  - [Prerequisites](#prerequisites)
-  - [Automated Reasoning Lifecycle](#automated-reasoning-lifecycle)
-  - [Live Bedrock Scanning](#live-bedrock-scanning)
-- [Architecture](#architecture)
-- [Resource Coverage](#resource-coverage)
-- [Development](#development)
-- [License](#license)
+GuardRail parses your infrastructure files, normalizes each resource into structured facts, then checks those facts against policy rules. You can run it entirely offline (no AWS needed) or connect it to Bedrock Guardrails for AI-powered Automated Reasoning.
+
+```
+IaC file → Parse → Normalize → Evaluate → Report
+```
+
+Results come out as a **color-coded console tree**, **JSON**, **SARIF** (GitHub Security tab), or a **standalone HTML report** with charts.
 
 ---
 
 ## Features
 
-- **Parses multiple formats.** Terraform (`.tf` and plan JSON), CloudFormation (YAML and JSON), and Kubernetes manifests with multiple documents.
-- **Normalizes before evaluating.** Raw IaC properties get converted into structured facts like encryption status, logging config, and public exposure before any checks run.
-- **Deterministic local checks.** S3 encryption, logging, and public access. RDS encryption with KMS. Security group ingress rules. IAM password policy strength.
-- **Bedrock Guardrails integration.** Send normalized resources to the `ApplyGuardrail` API for Automated Reasoning validation when you need more than deterministic checks.
-- **Four output formats.** Console tree for humans, JSON for scripts, SARIF for the GitHub Security tab, and a standalone HTML report with a compliance score.
-- **Declarative YAML policies.** Define rules with severity levels, resource type targeting, constraints, and remediation guidance. No code changes needed to add new rules.
-- **Full AR policy lifecycle.** CLI commands to create, build, version, and export Automated Reasoning policies directly from the terminal.
-- **Ready for CI.** Includes GitHub Actions workflows for running tests and producing SARIF compliance scans on pull requests.
+- **Three IaC formats** — Terraform (`.tf` + plan JSON), CloudFormation (YAML/JSON), Kubernetes manifests
+- **Local deterministic checks** — no AWS needed; runs offline in CI for S3, RDS, security groups, and IAM password policy
+- **Bedrock Guardrails integration** — send normalized resources to `ApplyGuardrail` for Automated Reasoning
+- **Retry + timeout** — Bedrock calls retry up to 3× with exponential back-off; configurable per-call timeout
+- **Secret redaction** — detects AWS keys, private keys, passwords, and tokens in IaC before they reach Bedrock
+- **Visual HTML report** — compliance score donut, severity bar chart, top failing rules leaderboard, per-file table
+- **Rich console dashboard** — per-file summary table, severity chart, and top rules panel alongside the tree output
+- **Declarative YAML policies** — add rules without touching Python; built-in packs for SOC 2, CIS AWS, PCI-DSS, HIPAA
+- **Full AR lifecycle CLI** — create, build, version, and export Automated Reasoning policies from the terminal
+- **CI-ready** — GitHub Actions workflows for tests, coverage, linting, and SARIF uploads
 
 ---
 
 ## Quick Start
 
-**Requirements:** Python 3.11 or newer.
+**Requirements:** Python 3.11+, no AWS account needed for local scanning.
 
-### Install with pip
+### 1. Install
 
 ```bash
+# With pip
 pip install -e '.[dev]'
-```
 
-### Install with uv
-
-```bash
+# Or with uv (faster)
 uv venv .venv && source .venv/bin/activate
 uv pip install -e '.[dev]'
 ```
 
-### Verify
+### 2. Verify
 
 ```bash
-pytest                    # run tests
-guardrail --help          # check CLI
+pytest           # all 26 tests should pass
+guardrail --help # explore available commands
 ```
 
-### First scan
+### 3. First scan
 
 ```bash
 guardrail scan examples/terraform/noncompliant-s3.tf \
@@ -132,15 +63,67 @@ guardrail scan examples/terraform/noncompliant-s3.tf \
   --no-bedrock
 ```
 
-No AWS credentials needed when running in local only mode.
+No AWS credentials needed with `--no-bedrock`.
+
+---
+
+## Understanding Results
+
+### Console output
+
+Each file is rendered as a tree. Each resource shows its findings inline.
+
+```
+examples/terraform/noncompliant-s3.tf (TerraformParser)
+├── aws_s3_bucket.data_lake
+│   ├── FAIL  SOC2-ENC-001  S3 Encryption at Rest — No encryption configuration found.
+│   ├── FAIL  SOC2-LOG-001  S3 Access Logging — Bucket logging is missing.
+│   └── FAIL  SOC2-NET-001  No Public S3 Buckets — Bucket ACL is explicitly public: public-read.
+└── aws_security_group.web
+    └── FAIL  SOC2-NET-002  No Unrestricted Security Group Ingress — SSH is open to the internet.
+```
+
+Below the tree, three dashboard panels are printed:
+
+| Panel | Contents |
+|---|---|
+| **Summary** | Overall score, total files, pass/fail/warn counts |
+| **Severity** | Unicode bar chart of failures by severity (CRITICAL → LOW) |
+| **Top Rules** | Bar chart of the 5 most-failing rule IDs |
+
+A **Files** table then shows per-file scores at a glance.
+
+### HTML report
+
+```bash
+guardrail scan examples/ --policy soc2-basic --no-bedrock \
+  --format html --output report.html
+open report.html
+```
+
+The HTML report contains:
+
+- **Compliance score donut** — color-coded green/yellow/red based on pass rate
+- **Severity bar chart** — horizontal bars for CRITICAL/HIGH/MEDIUM/LOW/INFORMATIONAL failures
+- **Top failing rules leaderboard** — the 5 rules that fail most often with relative bar lengths
+- **Files table** — per-file pass/fail/warn counts and score
+- **Findings detail** — expandable sections for each resource with normalized facts and proof text
+
+Everything is self-contained (no CDN, no external scripts).
+
+### Finding statuses
+
+| Status | Meaning |
+|---|---|
+| `PASS` | Rule is satisfied |
+| `FAIL` | Rule is violated; remediation guidance is shown |
+| `WARN` | Indeterminate — check manually or wire to Bedrock |
 
 ---
 
 ## Usage
 
 ### Scanning
-
-Scan a single file or an entire directory:
 
 ```bash
 # Single file
@@ -149,17 +132,14 @@ guardrail scan main.tf --policy soc2-basic --no-bedrock
 # Directory (recursive by default)
 guardrail scan infra/ --policy soc2-basic --policy cis-aws-foundations --no-bedrock
 
-# Non recursive
+# Non-recursive
 guardrail scan infra/ --policy soc2-basic --no-bedrock --no-recursive
-```
 
-You can make the process exit with a non zero code on failures, which is useful for CI gates:
-
-```bash
+# Fail CI on any finding (exit code 1)
 guardrail scan infra/ --policy soc2-basic --no-bedrock --fail-on-findings
 ```
 
-### Auditing by Framework
+### Auditing by framework
 
 Match policies by framework name instead of the exact policy name:
 
@@ -168,67 +148,78 @@ guardrail audit infra/ --frameworks soc2 --no-bedrock
 guardrail audit infra/ --frameworks soc2,hipaa --no-bedrock --format json
 ```
 
-### Output Formats
+### Output formats
 
-| Format    | Flag              | Use case                                |
-|-----------|-------------------|-----------------------------------------|
-| `console` | `--format console` | Human readable tree (default)          |
-| `json`    | `--format json`   | Machine readable, pipe to `jq`          |
-| `sarif`   | `--format sarif`  | GitHub Security tab and code scanning   |
-| `html`    | `--format html`   | Standalone report with compliance score |
+| Format | Flag | Use case |
+|---|---|---|
+| `console` | `--format console` | Human-readable tree + dashboard (default) |
+| `json` | `--format json` | Machine-readable; pipe to `jq` |
+| `sarif` | `--format sarif` | GitHub Security tab and code scanning |
+| `html` | `--format html` | Standalone report with charts |
 
-Write output to a file with `--output`:
-
-```bash
-guardrail scan infra/ --policy soc2-basic --no-bedrock \
-  --format sarif --output results.sarif
-
-guardrail scan infra/ --policy soc2-basic --no-bedrock \
-  --format html --output report.html
-```
-
-### Explain Mode
-
-Print the normalized facts and narrative the engine produces for each resource:
+Write to a file with `--output`:
 
 ```bash
-guardrail scan examples/terraform/noncompliant-s3.tf \
-  --policy soc2-basic --no-bedrock --explain
+guardrail scan infra/ --policy soc2-basic --no-bedrock --format sarif --output results.sarif
+guardrail scan infra/ --policy soc2-basic --no-bedrock --format html  --output report.html
 ```
 
-This is useful for debugging policies and understanding exactly what the engine sees before it runs checks.
+### Explain mode
 
-### CI Integration
+Print the normalized facts the engine produces for each resource — useful for debugging policies:
+
+```bash
+guardrail scan main.tf --policy soc2-basic --no-bedrock --explain
+```
+
+### Logging
+
+Set `--log-level` to see internal engine activity on stderr:
+
+```bash
+# Show scan progress and Bedrock retry events
+guardrail scan infra/ --policy soc2-basic --log-level INFO
+
+# Full debug output (parser decisions, normalized text, every Bedrock attempt)
+guardrail scan infra/ --policy soc2-basic --log-level DEBUG
+```
+
+Levels: `DEBUG`, `INFO`, `WARNING` (default), `ERROR`
+
+### CI integration
 
 The repo includes two GitHub Actions workflows:
 
-**`ci.yml`** runs tests on every push and pull request.
+**`ci.yml`** — runs on every push and PR:
+- Installs dependencies (with pip cache)
+- Runs `ruff check` for linting
+- Runs `pytest` with coverage (80%+ required)
 
-**`compliance-check.yml`** runs a SARIF producing compliance scan on pull requests that touch `.tf`, `.yaml`, `.yml`, or `.json` files. It uploads findings to the GitHub Security tab and posts a pull request comment on failure.
-
-To use Bedrock backed scanning in CI, set the `AWS_ROLE_ARN` secret to an IAM role with Bedrock permissions. Without it, scans run in local only mode.
+**`compliance-check.yml`** — runs on PRs touching `.tf`, `.yaml`, `.yml`, `.json`:
+- Produces a SARIF report and uploads it to the GitHub Security tab
+- Posts a PR comment listing critical/high findings on failure
+- Optionally uses Bedrock if `AWS_ROLE_ARN` is set
 
 ---
 
 ## Policy System
 
-### Built in Policies
+### Built-in policies
 
-| Policy               | Framework            | Rules |
-|----------------------|----------------------|-------|
-| `soc2-basic`         | SOC 2 Type II        | 5     |
-| `cis-aws-foundations` | CIS AWS Foundations  | 5     |
-| `pci-dss-basic`      | PCI DSS              | 5     |
-| `hipaa-basic`        | HIPAA                | 5     |
-| `custom-example`     | Custom               | 1     |
-
-List all available policies:
+| Policy | Framework | Rules |
+|---|---|---|
+| `soc2-basic` | SOC 2 Type II | 5 |
+| `cis-aws-foundations` | CIS AWS Foundations | 5 |
+| `pci-dss-basic` | PCI DSS | 5 |
+| `hipaa-basic` | HIPAA | 5 |
+| `custom-example` | Custom | 1 |
 
 ```bash
-guardrail policy list
+guardrail policy list               # list all
+guardrail policy show soc2-basic    # view rules
 ```
 
-### Writing Custom Policies
+### Writing custom policies
 
 Create a YAML file in your policies directory:
 
@@ -236,22 +227,22 @@ Create a YAML file in your policies directory:
 name: my-org-policy
 version: "1.0.0"
 framework: Internal
-description: Organization specific compliance rules.
+description: Organization-specific compliance rules.
 rules:
   - id: ORG-S3-001
     title: S3 buckets must be encrypted
-    description: All S3 buckets require server side encryption.
+    description: All S3 buckets require server-side encryption.
     severity: HIGH
     resource_types:
       - aws_s3_bucket
       - AWS::S3::Bucket
-    constraint: S3 bucket configurations MUST include server side encryption.
+    constraint: S3 bucket configurations MUST include server-side encryption.
     remediation: Add a server_side_encryption_configuration block with AES256 or aws:kms.
 ```
 
-**Required fields per rule:** `id`, `title`, `severity`, `resource_types`, `constraint`
+**Required rule fields:** `id`, `title`, `severity`, `resource_types`, `constraint`
 
-**Optional fields:** `description`, `remediation`
+**Optional:** `description`, `remediation`
 
 Validate before using:
 
@@ -259,11 +250,17 @@ Validate before using:
 guardrail policy validate my-org-policy.yaml
 ```
 
-### Policy Commands
+Point the engine at your custom directory:
 
 ```bash
-guardrail policy list                              # list all policies
-guardrail policy show soc2-basic                   # show rules in a policy
+guardrail scan infra/ --policy my-org-policy --policy-dir ./my-policies --no-bedrock
+```
+
+### Policy commands
+
+```bash
+guardrail policy list                              # list all available policies
+guardrail policy show soc2-basic                   # display rules in a policy
 guardrail policy validate policies/my-policy.yaml  # validate YAML structure
 guardrail policy sync --policy-dir policies        # sync to Bedrock guardrails
 ```
@@ -272,20 +269,18 @@ guardrail policy sync --policy-dir policies        # sync to Bedrock guardrails
 
 ## AWS Bedrock Integration
 
-The engine supports two evaluation modes:
+### Evaluation modes
 
-| Mode            | Flag            | Requires AWS | Use case                        |
-|-----------------|-----------------|--------------|----------------------------------|
-| **Local only**  | `--no-bedrock`  | No           | Dev, CI, offline scanning        |
-| **Bedrock**     | `--bedrock`     | Yes          | Automated Reasoning validation   |
+| Mode | Flag | Requires AWS | Use case |
+|---|---|---|---|
+| **Local only** | `--no-bedrock` | No | Dev, CI, offline scanning |
+| **Bedrock** | `--bedrock` | Yes | Automated Reasoning validation |
 
 ### Prerequisites
 
-For Bedrock backed scanning you need:
-
 1. An AWS account with Bedrock and Automated Reasoning access in `us-east-1`
-2. Credentials available via `AWS_PROFILE`, environment variables, or an IAM role
-3. IAM permissions for the Bedrock actions listed below
+2. Credentials via `AWS_PROFILE`, environment variables, or an IAM role
+3. IAM permissions (see below)
 
 ```bash
 export AWS_REGION=us-east-1
@@ -294,6 +289,9 @@ export AWS_PROFILE=your-profile
 # Verify access
 aws sts get-caller-identity
 aws bedrock list-guardrails --region us-east-1
+
+# Smoke test
+python scripts/bedrock_smoke.py
 ```
 
 <details>
@@ -329,9 +327,7 @@ aws bedrock list-guardrails --region us-east-1
 
 </details>
 
-### Automated Reasoning Lifecycle
-
-The CLI provides commands for the full AR policy lifecycle:
+### Automated Reasoning lifecycle
 
 ```bash
 # 1. List existing AR policies
@@ -351,15 +347,15 @@ guardrail policy ar-build-status \
 # 4. Create an immutable version
 guardrail policy ar-version --policy-arn <policy-arn>
 
-# 5. Export the policy definition
+# 5. Export the policy definition as JSON
 guardrail policy ar-export \
   --policy-version-arn <policy-arn>:1 \
   --output policy-definition.json
 ```
 
-### Live Bedrock Scanning
+### Live Bedrock scanning
 
-Once you have a versioned AR policy, bind it in your YAML policy file:
+Bind a versioned AR policy in your YAML policy file:
 
 ```yaml
 name: soc2-basic
@@ -372,7 +368,7 @@ rules:
   # ...
 ```
 
-Sync the policy to create a Bedrock guardrail, then scan without the `--no-bedrock` flag:
+Sync to create the Bedrock guardrail, then scan:
 
 ```bash
 guardrail policy sync --policy-dir policies
@@ -381,67 +377,84 @@ guardrail scan infra/ --policy soc2-basic --region us-east-1
 
 ---
 
+## Docker
+
+Build and run the engine in a container (non-root user, no AWS credentials baked in):
+
+```bash
+docker build -t guardrail .
+
+# Local scan (mount your IaC directory)
+docker run --rm -v $(pwd)/infra:/infra guardrail \
+  scan /infra --policy soc2-basic --no-bedrock
+
+# With AWS credentials for Bedrock
+docker run --rm \
+  -e AWS_ACCESS_KEY_ID \
+  -e AWS_SECRET_ACCESS_KEY \
+  -e AWS_REGION=us-east-1 \
+  -v $(pwd)/infra:/infra \
+  guardrail scan /infra --policy soc2-basic
+```
+
+---
+
 ## Architecture
 
 ```
 src/guardrail_compliance/
-  cli.py                  # Typer CLI with scan, audit, and policy commands
+  cli.py                  # Typer CLI — scan, audit, policy commands
   core/
-    engine.py             # Orchestrator: parse, normalize, evaluate
-    normalization.py      # Turns resources into deterministic facts and narrative
-    guardrail_client.py   # Async Bedrock ApplyGuardrail wrapper
+    engine.py             # Orchestrator: parse → normalize → evaluate
+    normalization.py      # Extracts deterministic facts + narrative text
+    guardrail_client.py   # Async Bedrock wrapper with retry + timeout
     policy_manager.py     # Bedrock guardrail and AR policy lifecycle
-    models.py             # Dataclasses for Finding, ScanResult, etc.
+    models.py             # Finding, ScanResult, ResourceEvaluation, etc.
   parsers/
-    base.py               # IaCParser base class and ResourceBlock
-    terraform.py          # .tf files (hcl2 with heuristic fallback) and plan JSON
-    cloudformation.py     # YAML and JSON with a Resources section
-    kubernetes.py         # Multi document YAML manifests
+    base.py               # IaCParser ABC and ResourceBlock
+    terraform.py          # .tf files (hcl2 + heuristic fallback) and plan JSON
+    cloudformation.py     # YAML/JSON with a Resources section
+    kubernetes.py         # Multi-document YAML manifests
   policies/
-    registry.py           # YAML policy loading, validation, and matching
+    registry.py           # YAML loading, validation, and rule matching
   reporting/
-    console.py            # Rich tree output
+    console.py            # Rich tree + dashboard (summary, severity, top rules)
     json_report.py        # JSON serialization
     sarif.py              # SARIF 2.1.0 format
-    html_report.py        # Standalone HTML with SVG donut chart
+    html_report.py        # Self-contained HTML with SVG charts
   utils/
     config.py             # EngineConfig dataclass
-    exceptions.py         # Error hierarchy
+    exceptions.py         # GuardrailComplianceError hierarchy
+    logging_config.py     # setup_logging() — package-scoped, stderr
+    secrets.py            # redact_secrets() — AWS keys, tokens, passwords
 ```
 
-**Data flow:**
+**Why normalize first?**
 
-```
-IaC file -> Parser -> ResourceBlock -> Normalizer -> NormalizedResource
-  -> Engine (local checks or Bedrock) -> Findings -> Reporter
-```
-
-The normalization layer is the key design decision. Rather than sending raw HCL or YAML to Bedrock, the engine first extracts structured facts (encryption status, ACL value, logging target, and so on) and builds a clean narrative. This gives deterministic local checks for free and produces much better Automated Reasoning results.
+Rather than sending raw HCL or YAML to Bedrock, the engine extracts structured facts (`encryption_configured`, `ssh_open_to_world`, etc.) and builds a clean narrative. This gives fast deterministic local checks for free and produces far better Automated Reasoning results.
 
 ---
 
 ## Resource Coverage
 
-### Deterministic Checks
+### Deterministic checks (no AWS needed)
 
-| Check                      | Resource Types                                        |
-|----------------------------|-------------------------------------------------------|
-| S3 encryption at rest      | `aws_s3_bucket`, `AWS::S3::Bucket`                    |
-| S3 access logging          | `aws_s3_bucket`, `AWS::S3::Bucket`                    |
-| S3 public access posture   | `aws_s3_bucket`, `aws_s3_bucket_public_access_block`  |
-| RDS encryption with KMS    | `aws_db_instance`, `AWS::RDS::DBInstance`             |
-| Security group ingress     | `aws_security_group`, `AWS::EC2::SecurityGroup`       |
-| IAM password policy        | `aws_iam_account_password_policy`                     |
+| Check | Resource types |
+|---|---|
+| S3 encryption at rest | `aws_s3_bucket`, `AWS::S3::Bucket` |
+| S3 access logging | `aws_s3_bucket`, `AWS::S3::Bucket` |
+| S3 public access posture | `aws_s3_bucket`, `aws_s3_bucket_public_access_block` |
+| RDS encryption with KMS | `aws_db_instance`, `AWS::RDS::DBInstance` |
+| Security group ingress | `aws_security_group`, `AWS::EC2::SecurityGroup` |
+| IAM password policy | `aws_iam_account_password_policy` |
 
-### Parser Coverage
+### Parser coverage
 
-| Parser         | File Types              | Notes                                 |
-|----------------|-------------------------|---------------------------------------|
-| Terraform      | `.tf`, plan JSON        | hcl2 library with heuristic fallback  |
-| CloudFormation | `.yaml`, `.yml`, `.json`| Detects the Resources section         |
-| Kubernetes     | `.yaml`, `.yml`         | Multi document, detects the kind field|
-
-Rules that don't have a specific local evaluator fall through to keyword based generic routing. Any rule can be wired to Bedrock for Automated Reasoning evaluation by binding an AR policy in the YAML.
+| Parser | File types | Notes |
+|---|---|---|
+| Terraform | `.tf`, plan JSON | hcl2 library with heuristic fallback |
+| CloudFormation | `.yaml`, `.yml`, `.json` | Detects `Resources` section |
+| Kubernetes | `.yaml`, `.yml` | Multi-document, detects `kind` field |
 
 ---
 
@@ -455,50 +468,40 @@ cd guardrail-compliance-engine
 pip install -e '.[dev]'
 ```
 
-### Run Tests
+### Common tasks
 
 ```bash
-pytest             # all tests
-pytest -q          # quiet mode
-pytest -x          # stop on first failure
+make test        # run tests with coverage (80% minimum)
+make lint        # ruff check — must pass before merging
+make lint-fix    # auto-fix ruff issues
+make coverage    # run tests and open HTML coverage report
+make scan-example  # quick local scan of the bundled example files
+make smoke-bedrock # verify AWS credentials and Bedrock access
 ```
 
-### Project Structure
-
-```
-tests/                     # pytest suite
-examples/
-  terraform/               # compliant and noncompliant .tf files
-  cloudformation/          # compliant and noncompliant stacks
-  kubernetes/              # compliant and noncompliant manifests
-policies/                  # YAML policy packs
-scripts/                   # utility scripts (Bedrock smoke test)
-.github/workflows/         # CI and compliance check workflows
-```
-
-### Adding a New Check
+### Adding a new check
 
 1. Add the rule to a YAML policy file under `policies/`
 2. Add a `_check_*` method to `engine.py`
-3. Register it in `_RULE_DISPATCH` (by rule ID) or `_GENERIC_ROUTES` (by keyword)
-4. If the check needs new facts, extend `normalization.py`
+3. Register it in `_RULE_DISPATCH` (by exact rule ID) or `_GENERIC_ROUTES` (by keyword)
+4. Extend `normalization.py` if the check needs new facts
 5. Add a test
 
-### Adding a New Parser
+### Adding a new parser
 
 1. Create a class extending `IaCParser` in `parsers/`
 2. Implement `supports()` and `parse()` returning `ResourceBlock` instances
-3. Add it to the parser list in `ComplianceEngine.__init__`
+3. Add it to `self.parsers` in `ComplianceEngine.__init__`
 4. Add normalization support in `ResourceNormalizer._build_facts` if needed
 
 ---
 
 ## Known Limitations
 
-- Not every policy rule has a dedicated local evaluator. Some use keyword based generic routing.
-- Kubernetes manifests are parsed and normalized, but the built in policy packs focus on AWS resources.
-- Cross file Terraform module correlation is basic.
-- Automated Reasoning quality depends on the source material you provide to Bedrock.
+- Not every rule has a dedicated local evaluator — some fall back to keyword routing
+- Kubernetes manifests are parsed but the built-in policy packs focus on AWS resources
+- Cross-file Terraform module correlation is basic
+- Automated Reasoning quality depends on the source material provided to Bedrock
 
 ---
 

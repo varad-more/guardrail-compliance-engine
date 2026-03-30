@@ -5,8 +5,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .base import IaCParser, ResourceBlock
 from ..utils.exceptions import ParserError
+from .base import IaCParser, ResourceBlock
 
 try:
     import hcl2  # type: ignore

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from ..core.models import Finding, ResourceEvaluation, ScanResult
 
 
 def build_sarif_report(results: Iterable[ScanResult]) -> dict[str, Any]:
     """Build a SARIF 2.1.0 report from scan results (for GitHub Security tab integration)."""
-    rules: dict[str, dict[str, Any]] = dict()
+    rules: dict[str, dict[str, Any]] = {}
     sarif_results: list[dict[str, Any]] = []
 
     for scan in results:

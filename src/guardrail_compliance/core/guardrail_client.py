@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from .models import ComplianceResult, Finding
 from ..utils.exceptions import BedrockEvaluationError
+from .models import ComplianceResult, Finding
+
+log = logging.getLogger(__name__)
 
 
 class BedrockGuardrailClient:
@@ -54,6 +57,14 @@ class BedrockGuardrailClient:
     }
     _REMEDIABLE_KINDS = {"translationAmbiguous", "noTranslations", "tooComplex"}
 
+    # Errors that are safe to retry (transient / throttling).
+    _RETRYABLE_CODES = frozenset({
+        "ThrottlingException",
+        "ServiceUnavailableException",
+        "InternalServerException",
+        "RequestTimeout",
+    })
+
     def __init__(
         self,
         guardrail_id: str,
@@ -61,10 +72,16 @@ class BedrockGuardrailClient:
         *,
         region: str = "us-east-1",
         client: Any | None = None,
+        max_retries: int = 3,
+        base_backoff: float = 1.0,
+        timeout: float = 30.0,
     ) -> None:
         self.guardrail_id = guardrail_id
         self.guardrail_version = guardrail_version
         self.region = region
+        self.max_retries = max_retries
+        self.base_backoff = base_backoff
+        self.timeout = timeout
         self.client = client or boto3.client("bedrock-runtime", region_name=region)
 
     # ------------------------------------------------------------------
@@ -72,18 +89,58 @@ class BedrockGuardrailClient:
     # ------------------------------------------------------------------
 
     async def evaluate(self, content: str, content_type: str = "terraform") -> ComplianceResult:
-        """Call ``ApplyGuardrail`` and return a parsed ``ComplianceResult``."""
-        try:
-            response = await asyncio.to_thread(
-                self.client.apply_guardrail,
-                guardrailIdentifier=self.guardrail_id,
-                guardrailVersion=self.guardrail_version,
-                source="OUTPUT",
-                content=[{"text": {"text": content}}],
-                outputScope="FULL",
-            )
-        except (ClientError, BotoCoreError) as exc:
-            raise BedrockEvaluationError(f"ApplyGuardrail failed: {exc}") from exc
+        """Call ``ApplyGuardrail`` and return a parsed ``ComplianceResult``.
+
+        Retries up to *max_retries* times with exponential back-off on
+        transient / throttling errors.  Each attempt is bounded by *timeout*
+        seconds.
+        """
+        attempt = 0
+        last_exc: Exception | None = None
+        while attempt <= self.max_retries:
+            try:
+                log.debug(
+                    "ApplyGuardrail attempt %d/%d guardrail=%s",
+                    attempt + 1, self.max_retries + 1, self.guardrail_id,
+                )
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.client.apply_guardrail,
+                        guardrailIdentifier=self.guardrail_id,
+                        guardrailVersion=self.guardrail_version,
+                        source="OUTPUT",
+                        content=[{"text": {"text": content}}],
+                        outputScope="FULL",
+                    ),
+                    timeout=self.timeout,
+                )
+                break
+            except TimeoutError as exc:
+                last_exc = exc
+                log.warning("ApplyGuardrail timed out after %.1fs (attempt %d)", self.timeout, attempt + 1)
+                attempt += 1
+                if attempt <= self.max_retries:
+                    await asyncio.sleep(self.base_backoff * (2 ** (attempt - 1)))
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code", "")
+                if code in self._RETRYABLE_CODES:
+                    last_exc = exc
+                    log.warning("Retryable Bedrock error %s (attempt %d): %s", code, attempt + 1, exc)
+                    attempt += 1
+                    if attempt <= self.max_retries:
+                        await asyncio.sleep(self.base_backoff * (2 ** (attempt - 1)))
+                else:
+                    raise BedrockEvaluationError(f"ApplyGuardrail failed: {exc}") from exc
+            except BotoCoreError as exc:
+                last_exc = exc
+                log.warning("Transient BotoCoreError (attempt %d): %s", attempt + 1, exc)
+                attempt += 1
+                if attempt <= self.max_retries:
+                    await asyncio.sleep(self.base_backoff * (2 ** (attempt - 1)))
+        else:
+            raise BedrockEvaluationError(
+                f"ApplyGuardrail failed after {self.max_retries + 1} attempts: {last_exc}"
+            ) from last_exc
 
         findings = self._parse_assessments(response)
         usage = response.get("usage", {})
