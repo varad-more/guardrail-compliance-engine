@@ -54,7 +54,7 @@ def render_scan_results(
                 resource_node.add(Pretty(resource.normalized_facts, expand_all=True))
             for finding in resource.findings:
                 status_style = STATUS_STYLES.get(finding.status, "white")
-                resource_node.add(
+                finding_node = resource_node.add(
                     Text.assemble(
                         (f"{finding.status:>4}", status_style),
                         ("  ", ""),
@@ -64,6 +64,11 @@ def render_scan_results(
                         (f" — {finding.message}", "dim"),
                     )
                 )
+                if finding.status == "FAIL" and finding.remediation_snippet:
+                    finding_node.add(
+                        Panel(finding.remediation_snippet, title="[dim]Suggested fix[/dim]",
+                              border_style="green", expand=False)
+                    )
                 totals[finding.status] += 1
                 if finding.status == "FAIL":
                     sev_fails[finding.severity] += 1

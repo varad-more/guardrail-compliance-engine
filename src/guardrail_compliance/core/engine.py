@@ -6,6 +6,7 @@ from pathlib import Path
 from ..parsers import CloudFormationParser, KubernetesParser, TerraformParser
 from ..parsers.base import IaCParser, ResourceBlock
 from ..policies.registry import PolicyDefinition, PolicyRegistry, PolicyRule
+from ..remediation.snippets import get_snippet
 from ..utils.config import EngineConfig
 from ..utils.exceptions import ParserError
 from .guardrail_client import BedrockGuardrailClient
@@ -13,44 +14,6 @@ from .models import Finding, ResourceEvaluation, ScanResult
 from .normalization import NormalizedResource, ResourceNormalizer
 
 log = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Generic keyword routing table
-# ---------------------------------------------------------------------------
-# Maps resource types to (keywords, checker_method) pairs for rules that don't
-# have an explicit rule-ID entry in _RULE_DISPATCH.  Terraform and
-# CloudFormation equivalents share the same route list.
-
-_ROUTE_DEFINITIONS: list[tuple[list[str], list[tuple[list[str], str]]]] = [
-    (
-        ["aws_s3_bucket", "AWS::S3::Bucket"],
-        [
-            (["encrypt"], "_check_s3_encryption"),
-            (["log"], "_check_s3_logging"),
-            (["public", "access block"], "_check_s3_public_access"),
-        ],
-    ),
-    (
-        ["aws_s3_bucket_public_access_block", "AWS::S3::BucketPublicAccessBlock"],
-        [(["public", "access block"], "_check_s3_public_access")],
-    ),
-    (
-        ["aws_db_instance", "AWS::RDS::DBInstance"],
-        [(["encrypt", "kms"], "_check_rds_encryption")],
-    ),
-    (
-        ["aws_security_group", "AWS::EC2::SecurityGroup"],
-        [(["ssh", "ingress", "public", "administrative", "admin port"], "_check_security_group_ingress")],
-    ),
-    (
-        ["aws_iam_account_password_policy", "AWS::IAM::AccountPasswordPolicy"],
-        [(["password"], "_check_password_policy")],
-    ),
-]
-
-_GENERIC_ROUTES: dict[str, list[tuple[list[str], str]]] = {
-    rtype: routes for rtypes, routes in _ROUTE_DEFINITIONS for rtype in rtypes
-}
 
 _PUBLIC_ACLS = {"public-read", "public-read-write", "website", "publicread", "publicreadwrite", "authenticatedread"}
 
@@ -63,13 +26,40 @@ class ComplianceEngine:
     check.
     """
 
-    # Rule-ID -> checker method name for deterministic dispatch.
+    # Rule-ID -> checker method name for deterministic local evaluation.
+    # Every rule that can be checked locally must be listed here.
     _RULE_DISPATCH: dict[str, str] = {
         "SOC2-ENC-001": "_check_s3_encryption",
         "SOC2-LOG-001": "_check_s3_logging",
         "SOC2-NET-001": "_check_s3_public_access",
         "SOC2-ENC-002": "_check_rds_encryption",
         "SOC2-NET-002": "_check_security_group_ingress",
+        "CIS-S3-001": "_check_s3_encryption",
+        "CIS-S3-002": "_check_s3_public_access",
+        "CIS-RDS-001": "_check_rds_encryption",
+        "CIS-NET-001": "_check_security_group_ingress",
+        "CIS-IAM-001": "_check_password_policy",
+        "PCI-ENC-001": "_check_rds_encryption",
+        "PCI-NET-001": "_check_security_group_ingress",
+        "PCI-LOG-001": "_check_s3_logging",
+        "HIPAA-ENC-001": "_check_rds_encryption",
+        "HIPAA-ENC-002": "_check_s3_public_access",
+        "HIPAA-LOG-001": "_check_s3_logging",
+        "HIPAA-NET-001": "_check_security_group_ingress",
+        "HIPAA-BKP-001": "_check_rds_backup",
+        "PCI-STO-001": "_check_s3_public_access",
+        "PCI-IAM-001": "_check_password_policy",
+        "CIS-CT-001": "_check_cloudtrail_logging",
+        "SOC2-LOG-002": "_check_cloudtrail_logging",
+        "CIS-EBS-001": "_check_ebs_encryption",
+        "SOC2-ENC-003": "_check_ebs_encryption",
+        "SOC2-ENC-004": "_check_dynamodb_encryption",
+        "CIS-VPC-001": "_check_vpc_flow_logs",
+        "K8S-SEC-001": "_check_k8s_privileged",
+        "K8S-SEC-002": "_check_k8s_run_as_root",
+        "K8S-SEC-003": "_check_k8s_resource_limits",
+        "K8S-SEC-004": "_check_k8s_host_namespaces",
+        "K8S-SEC-005": "_check_k8s_probes",
     }
 
     def __init__(self, config: EngineConfig) -> None:
@@ -98,9 +88,17 @@ class ComplianceEngine:
         for resource in resources:
             normalized = self.normalizer.normalize(resource, resources)
             findings: list[Finding] = []
-            grouped = self._group_rules_by_policy(
-                self.policy_registry.match_rules(resource.resource_type, selected)
-            )
+            matched = self.policy_registry.match_rules(resource.resource_type, selected)
+
+            # Filter out rules suppressed by inline # guardrail:ignore comments.
+            if resource.suppressed_rules:
+                if resource.suppress_all:
+                    log.debug("All rules suppressed for %s/%s", resource.resource_type, resource.resource_name)
+                    matched = []
+                else:
+                    matched = [(p, r) for p, r in matched if r.id not in resource.suppressed_rules]
+
+            grouped = self._group_rules_by_policy(matched)
 
             for policy, rules in grouped.values():
                 if self.config.use_bedrock and policy.guardrail_id:
@@ -175,13 +173,13 @@ class ComplianceEngine:
         ]
 
     def _evaluate_locally(self, resource: ResourceBlock, normalized: NormalizedResource, rule: PolicyRule) -> Finding:
-        """Run a deterministic local check for *rule* against *resource*.
-
-        Dispatch priority: exact rule-ID match first, then keyword-based generic routing.
-        """
-        method_name = self._RULE_DISPATCH.get(rule.id.upper()) or self._route_generic(resource, rule)
+        """Run a deterministic local check for *rule* against *resource*."""
+        method_name = self._RULE_DISPATCH.get(rule.id.upper())
         if method_name:
-            return getattr(self, method_name)(resource, normalized, rule)
+            finding = getattr(self, method_name)(resource, normalized, rule)
+            if finding.status == "FAIL":
+                finding.remediation_snippet = get_snippet(method_name, resource.resource_type)
+            return finding
         return self._finding(rule, status="WARN",
                              message="No local evaluator yet; wire this rule to Bedrock or add a check.",
                              proof=rule.constraint, source="local")
@@ -252,6 +250,16 @@ class ComplianceEngine:
             proof=normalized.text,
         )
 
+    def _check_rds_backup(self, resource: ResourceBlock, normalized: NormalizedResource, rule: PolicyRule) -> Finding:
+        """Check that RDS automated backups are configured with a positive retention period."""
+        retention = normalized.facts.get("backup_retention_period")
+        ok = retention is not None and retention > 0
+        return self._finding(
+            rule, status="PASS" if ok else "FAIL",
+            message=f"RDS backup retention is {retention} day(s)." if ok else "RDS backup retention is not configured.",
+            proof=normalized.text,
+        )
+
     def _check_security_group_ingress(self, resource: ResourceBlock, normalized: NormalizedResource, rule: PolicyRule) -> Finding:
         """Check that security group ingress rules restrict SSH and other admin ports."""
         if resource.resource_type not in {"aws_security_group", "AWS::EC2::SecurityGroup"}:
@@ -295,6 +303,89 @@ class ComplianceEngine:
         )
 
     # ------------------------------------------------------------------
+    # AWS extended checkers
+    # ------------------------------------------------------------------
+
+    def _check_cloudtrail_logging(self, resource: ResourceBlock, normalized: NormalizedResource, rule: PolicyRule) -> Finding:
+        facts = normalized.facts
+        ok = facts.get("is_logging") and facts.get("is_multi_region") and facts.get("log_file_validation")
+        if ok:
+            return self._finding(rule, status="PASS", message="CloudTrail is enabled with multi-region and log file validation.", proof=normalized.text)
+        problems = []
+        if not facts.get("is_logging"):
+            problems.append("logging disabled")
+        if not facts.get("is_multi_region"):
+            problems.append("not multi-region")
+        if not facts.get("log_file_validation"):
+            problems.append("log file validation disabled")
+        return self._finding(rule, status="FAIL", message=f"CloudTrail issues: {', '.join(problems)}.", proof=normalized.text)
+
+    def _check_ebs_encryption(self, resource: ResourceBlock, normalized: NormalizedResource, rule: PolicyRule) -> Finding:
+        if normalized.facts.get("encrypted"):
+            return self._finding(rule, status="PASS", message="EBS volume encryption is enabled.", proof=normalized.text)
+        return self._finding(rule, status="FAIL", message="EBS volume is not encrypted.", proof=normalized.text)
+
+    def _check_dynamodb_encryption(self, resource: ResourceBlock, normalized: NormalizedResource, rule: PolicyRule) -> Finding:
+        if normalized.facts.get("sse_enabled"):
+            return self._finding(rule, status="PASS", message="DynamoDB SSE is enabled.", proof=normalized.text)
+        return self._finding(rule, status="FAIL", message="DynamoDB server-side encryption is not enabled.", proof=normalized.text)
+
+    def _check_vpc_flow_logs(self, resource: ResourceBlock, normalized: NormalizedResource, rule: PolicyRule) -> Finding:
+        if normalized.facts.get("log_destination"):
+            return self._finding(rule, status="PASS", message="VPC flow log destination is configured.", proof=normalized.text)
+        return self._finding(rule, status="FAIL", message="VPC flow log has no log destination configured.", proof=normalized.text)
+
+    # ------------------------------------------------------------------
+    # Kubernetes checkers
+    # ------------------------------------------------------------------
+
+    _K8S_TYPES = {"Pod", "Deployment", "StatefulSet", "DaemonSet", "Job"}
+
+    def _check_k8s_privileged(self, resource: ResourceBlock, normalized: NormalizedResource, rule: PolicyRule) -> Finding:
+        if resource.resource_type not in self._K8S_TYPES:
+            return self._not_applicable(rule)
+        if normalized.facts.get("privileged") is True:
+            return self._finding(rule, status="FAIL", message="Container is running in privileged mode.", proof=normalized.text)
+        return self._finding(rule, status="PASS", message="No containers are running in privileged mode.", proof=normalized.text)
+
+    def _check_k8s_run_as_root(self, resource: ResourceBlock, normalized: NormalizedResource, rule: PolicyRule) -> Finding:
+        if resource.resource_type not in self._K8S_TYPES:
+            return self._not_applicable(rule)
+        if normalized.facts.get("run_as_non_root") is True:
+            return self._finding(rule, status="PASS", message="runAsNonRoot is enforced.", proof=normalized.text)
+        return self._finding(rule, status="FAIL", message="runAsNonRoot is not set; containers may run as root.", proof=normalized.text)
+
+    def _check_k8s_resource_limits(self, resource: ResourceBlock, normalized: NormalizedResource, rule: PolicyRule) -> Finding:
+        if resource.resource_type not in self._K8S_TYPES:
+            return self._not_applicable(rule)
+        if normalized.facts.get("all_containers_have_resource_limits"):
+            return self._finding(rule, status="PASS", message="All containers have resource limits.", proof=normalized.text)
+        missing = normalized.facts.get("containers_missing_limits") or []
+        return self._finding(rule, status="FAIL",
+                             message=f"Containers missing resource limits: {', '.join(missing) or 'unknown'}.",
+                             proof=normalized.text)
+
+    def _check_k8s_host_namespaces(self, resource: ResourceBlock, normalized: NormalizedResource, rule: PolicyRule) -> Finding:
+        if resource.resource_type not in self._K8S_TYPES:
+            return self._not_applicable(rule)
+        violations = [ns for ns in ("host_network", "host_pid", "host_ipc") if normalized.facts.get(ns)]
+        if violations:
+            return self._finding(rule, status="FAIL",
+                                 message=f"Pod uses host namespaces: {', '.join(violations)}.",
+                                 proof=normalized.text)
+        return self._finding(rule, status="PASS", message="No host namespace sharing.", proof=normalized.text)
+
+    def _check_k8s_probes(self, resource: ResourceBlock, normalized: NormalizedResource, rule: PolicyRule) -> Finding:
+        if resource.resource_type not in self._K8S_TYPES:
+            return self._not_applicable(rule)
+        if normalized.facts.get("all_containers_have_probes"):
+            return self._finding(rule, status="PASS", message="All containers have health probes.", proof=normalized.text)
+        missing = normalized.facts.get("containers_missing_probes") or []
+        return self._finding(rule, status="FAIL",
+                             message=f"Containers missing probes: {', '.join(missing) or 'unknown'}.",
+                             proof=normalized.text)
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
@@ -316,18 +407,6 @@ class ComplianceEngine:
                 grouped[policy.name] = (policy, [])
             grouped[policy.name][1].append(rule)
         return grouped
-
-    @staticmethod
-    def _route_generic(resource: ResourceBlock, rule: PolicyRule) -> str | None:
-        """Find a checker via keyword matching when there is no exact rule-ID dispatch."""
-        routes = _GENERIC_ROUTES.get(resource.resource_type)
-        if not routes:
-            return None
-        text = f"{rule.title} {rule.description} {rule.constraint}".lower()
-        for keywords, method_name in routes:
-            if any(kw in text for kw in keywords):
-                return method_name
-        return None
 
     @staticmethod
     def _finding(rule: PolicyRule, *, status: str, message: str, proof: str, source: str = "local") -> Finding:

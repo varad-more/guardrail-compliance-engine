@@ -287,10 +287,12 @@ class PolicyManager:
     # ---------------------------------------------------------------------
     # helpers
     # ---------------------------------------------------------------------
-    def _tag_list(self, tags: dict[str, str]) -> list[dict[str, str]]:
+    @staticmethod
+    def _tag_list(tags: dict[str, str]) -> list[dict[str, str]]:
         return [{"key": str(key), "value": str(value)} for key, value in tags.items()]
 
-    def _serialize_time(self, value: Any) -> str | None:
+    @staticmethod
+    def _serialize_time(value: Any) -> str | None:
         if value is None:
             return None
         if hasattr(value, "isoformat"):

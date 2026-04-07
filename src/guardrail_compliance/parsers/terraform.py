@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ..utils.exceptions import ParserError
-from .base import IaCParser, ResourceBlock
+from .base import IaCParser, ResourceBlock, parse_suppressions
 
 try:
     import hcl2  # type: ignore
@@ -50,6 +50,9 @@ class TerraformParser(IaCParser):
                 (resource_type, resource_name),
                 self._heuristic_properties(raw_block),
             )
+            # Include preceding comment lines for suppression detection.
+            preceding_comments = self._preceding_comments(text, match.start())
+            suppression_text = preceding_comments + raw_block
             resources.append(
                 ResourceBlock(
                     resource_type=resource_type,
@@ -58,6 +61,7 @@ class TerraformParser(IaCParser):
                     properties=properties,
                     file_path=file_path,
                     line_number=line_number,
+                    suppressed_rules=parse_suppressions(suppression_text),
                 )
             )
 
@@ -120,6 +124,20 @@ class TerraformParser(IaCParser):
                     structured[(resource_type, resource_name)] = properties if isinstance(properties, dict) else {}
 
         return structured
+
+    @staticmethod
+    def _preceding_comments(text: str, pos: int) -> str:
+        """Return comment/blank lines immediately before *pos* as a single string."""
+        lines_before = text[:pos].rstrip().splitlines()
+        comment_lines: list[str] = []
+        for line in reversed(lines_before):
+            stripped = line.strip()
+            if stripped.startswith("#") or stripped.startswith("//") or not stripped:
+                comment_lines.append(line)
+            else:
+                break
+        comment_lines.reverse()
+        return "\n".join(comment_lines) + "\n" if comment_lines else ""
 
     def _find_matching_brace(self, text: str, brace_start: int) -> int | None:
         depth = 0

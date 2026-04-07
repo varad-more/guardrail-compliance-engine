@@ -74,6 +74,10 @@ def _result(scan: ScanResult, resource: ResourceEvaluation, finding: Finding) ->
             "severity": finding.severity,
             "source": finding.source,
         },
+        **({"fixes": [{"description": {"text": "Suggested fix"},
+                        "artifactChanges": [{"artifactLocation": {"uri": str(scan.file_path)},
+                                             "replacements": [{"insertedContent": {"text": finding.remediation_snippet}}]}]}]}
+           if finding.remediation_snippet else {}),
     }
 
 

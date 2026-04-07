@@ -7,7 +7,7 @@ from typing import Any
 import yaml
 
 from ..utils.exceptions import ParserError
-from .base import IaCParser, ResourceBlock
+from .base import IaCParser, ResourceBlock, parse_suppressions
 
 
 class CloudFormationParser(IaCParser):
@@ -45,6 +45,7 @@ class CloudFormationParser(IaCParser):
                     properties=properties,
                     file_path=file_path,
                     line_number=line_number,
+                    suppressed_rules=parse_suppressions(raw_text),
                 )
             )
         return results

@@ -54,3 +54,33 @@ rules:
       - AWS::RDS::DBInstance
     constraint: Databases MUST enable storage encryption and configure KMS.
     remediation: Set storage encryption and a KMS key.
+
+  - id: CIS-CT-001
+    title: CloudTrail must be enabled with multi-region and log validation
+    description: CloudTrail should be active with multi-region trail and log file validation.
+    severity: CRITICAL
+    resource_types:
+      - aws_cloudtrail
+      - "AWS::CloudTrail::Trail"
+    constraint: CloudTrail MUST be enabled with multi-region and log file validation.
+    remediation: Enable CloudTrail with is_multi_region_trail and enable_log_file_validation set to true.
+
+  - id: CIS-EBS-001
+    title: EBS volumes must be encrypted
+    description: Elastic Block Store volumes should use encryption at rest.
+    severity: HIGH
+    resource_types:
+      - aws_ebs_volume
+      - "AWS::EC2::Volume"
+    constraint: EBS volumes MUST have encryption enabled.
+    remediation: Set encrypted = true and optionally specify a KMS key.
+
+  - id: CIS-VPC-001
+    title: VPC flow logs must be configured
+    description: VPC flow logs should be enabled with a log destination.
+    severity: MEDIUM
+    resource_types:
+      - aws_flow_log
+      - "AWS::EC2::FlowLog"
+    constraint: VPC flow logs MUST be configured with a log destination.
+    remediation: Create an aws_flow_log resource for your VPC with a log destination.

@@ -6,7 +6,7 @@ from typing import Any
 import yaml
 
 from ..utils.exceptions import ParserError
-from .base import IaCParser, ResourceBlock
+from .base import IaCParser, ResourceBlock, parse_suppressions
 
 
 class KubernetesParser(IaCParser):
@@ -44,6 +44,7 @@ class KubernetesParser(IaCParser):
                     properties=document,
                     file_path=file_path,
                     line_number=line_number,
+                    suppressed_rules=parse_suppressions(raw_text),
                 )
             )
         return results

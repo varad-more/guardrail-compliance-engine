@@ -14,6 +14,7 @@ class Finding:
     message: str
     proof: str | None = None
     remediation: str | None = None
+    remediation_snippet: str | None = None
     source: str = "local"
     raw: dict[str, Any] = field(default_factory=dict)
 

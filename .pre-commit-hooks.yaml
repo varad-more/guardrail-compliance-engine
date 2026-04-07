@@ -1,0 +1,7 @@
+- id: guardrail-scan
+  name: GuardRail Compliance Scan
+  entry: guardrail scan --no-bedrock --fail-on-findings
+  language: python
+  types_or: [terraform, yaml, json]
+  pass_filenames: true
+  additional_dependencies: []

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import subprocess
 from pathlib import Path
 
 import typer
@@ -13,8 +15,16 @@ from rich.table import Table
 from .core.engine import ComplianceEngine
 from .core.policy_manager import PolicyManager
 from .policies.registry import PolicyRegistry
-from .reporting import build_html_report, build_json_report, build_sarif_report, render_scan_results
-from .utils.config import EngineConfig
+from .reporting import (
+    build_html_report,
+    build_json_report,
+    build_pr_comments,
+    build_sarif_report,
+    build_summary_comment,
+    render_scan_results,
+)
+from .reporting.github_pr import post_pr_comment, post_review_comments
+from .utils.config import EngineConfig, find_config_file
 from .utils.exceptions import GuardrailComplianceError, PolicyValidationError
 from .utils.logging_config import setup_logging
 
@@ -40,14 +50,37 @@ def scan(
     use_bedrock: bool = typer.Option(True, "--bedrock/--no-bedrock", help="Use Bedrock for guardrail-bound policies."),
     explain: bool = typer.Option(False, "--explain", help="Show normalised facts in console output."),
     fail_on_findings: bool = typer.Option(False, "--fail-on-findings/--no-fail-on-findings", help="Exit non-zero on failures."),
+    severity_threshold: str = typer.Option("LOW", "--severity-threshold", help="Minimum severity to trigger non-zero exit (LOW, MEDIUM, HIGH, CRITICAL)."),
+    changed_only: str | None = typer.Option(None, "--changed-only", help="Only scan files changed vs a git ref (e.g. main, HEAD~3)."),
     log_level: str = typer.Option("WARNING", "--log-level", help="Logging level: DEBUG, INFO, WARNING, ERROR."),
 ) -> None:
     """Scan IaC files against configured compliance policies."""
     setup_logging(log_level)
-    results = _run_scan(path=path, policies=policy, format=format, recursive=recursive,
-                        region=region, policy_dir=policy_dir, use_bedrock=use_bedrock)
+
+    # Merge config file values for options still at their defaults.
+    cfg = _load_file_config()
+    if not policy and cfg.get("policies"):
+        policy = cfg["policies"]
+    if region == "us-east-1" and cfg.get("region"):
+        region = cfg["region"]
+    if policy_dir == Path("policies") and cfg.get("policy_dir"):
+        policy_dir = Path(cfg["policy_dir"])
+    if use_bedrock and cfg.get("use_bedrock") is False:
+        use_bedrock = False
+
+    scan_path = path
+    changed_files: set[Path] | None = None
+    if changed_only:
+        changed_files = _git_changed_files(path, changed_only)
+        if not changed_files:
+            console.print(f"[green]No IaC files changed vs {changed_only}.[/green]")
+            return
+
+    results = _run_scan(path=scan_path, policies=policy, format=format, recursive=recursive,
+                        region=region, policy_dir=policy_dir, use_bedrock=use_bedrock,
+                        changed_files=changed_files)
     _emit_output(results, format=format, output=output, explain=explain)
-    if fail_on_findings and any(r.has_failures for r in results):
+    if fail_on_findings and _has_failures_at_threshold(results, severity_threshold):
         raise typer.Exit(code=1)
 
 
@@ -93,6 +126,49 @@ def init(target: Path = typer.Argument(Path(".guardrail.yaml"), help="Config fil
     template = {"region": "us-east-1", "policies": ["soc2-basic"], "policy_dir": "policies", "use_bedrock": True}
     target.write_text(yaml.safe_dump(template, sort_keys=False), encoding="utf-8")
     console.print(f"[green]Created[/green] {target}")
+
+
+@app.command()
+def diff(
+    path: Path = typer.Argument(Path("."), exists=True, readable=True, help="Repository root."),
+    ref: str = typer.Option("main", "--ref", help="Git ref to diff against (e.g. main, HEAD~3)."),
+    policy: list[str] = typer.Option([], "--policy", help="Policy name to apply."),
+    policy_dir: Path = typer.Option(Path("policies"), "--policy-dir"),
+    use_bedrock: bool = typer.Option(True, "--bedrock/--no-bedrock"),
+    format: str = typer.Option("console", "--format", help="Output format: console, github."),
+    repo: str | None = typer.Option(None, "--repo", help="GitHub owner/repo (e.g. user/repo)."),
+    pr: int | None = typer.Option(None, "--pr", help="GitHub PR number for inline comments."),
+    log_level: str = typer.Option("WARNING", "--log-level"),
+) -> None:
+    """Scan only files changed vs a git ref and optionally post to a GitHub PR."""
+    setup_logging(log_level)
+
+    changed_files = _git_changed_files(path, ref)
+    if not changed_files:
+        console.print(f"[green]No IaC files changed vs {ref}.[/green]")
+        return
+
+    results = _run_scan(
+        path=path, policies=policy, format="console", recursive=True,
+        region="us-east-1", policy_dir=policy_dir, use_bedrock=use_bedrock,
+        changed_files=changed_files,
+    )
+
+    if format == "github" and repo and pr:
+        owner, _, repo_name = repo.partition("/")
+        summary = build_summary_comment(results)
+        post_pr_comment(owner=owner, repo=repo_name, pr_number=pr, body=summary)
+
+        comments = build_pr_comments(results)
+        if comments:
+            commit_sha = _git_head_sha(path)
+            post_review_comments(
+                owner=owner, repo=repo_name, pr_number=pr,
+                commit_sha=commit_sha, comments=comments,
+            )
+        console.print(f"[green]Posted {len(comments)} inline comment(s) to {repo}#{pr}.[/green]")
+    else:
+        _emit_output(results, format="console", output=None, explain=False)
 
 
 # -----------------------------------------------------------------------
@@ -281,7 +357,8 @@ def ar_export(
 # -----------------------------------------------------------------------
 
 def _run_scan(*, path: Path, policies: list[str], format: str, recursive: bool,
-              region: str, policy_dir: Path, use_bedrock: bool) -> list:
+              region: str, policy_dir: Path, use_bedrock: bool,
+              changed_files: set[Path] | None = None) -> list:
     """Build an engine and run a scan (single file or directory)."""
     try:
         config = EngineConfig(
@@ -290,6 +367,16 @@ def _run_scan(*, path: Path, policies: list[str], format: str, recursive: bool,
             output_format=format, use_bedrock=use_bedrock,
         )
         engine = ComplianceEngine(config)
+
+        if changed_files is not None:
+            # Diff-aware mode: scan only the changed files individually.
+            results = []
+            for f in sorted(changed_files):
+                if f.is_file():
+                    with contextlib.suppress(GuardrailComplianceError):
+                        results.append(asyncio.run(engine.scan(f)))
+            return results
+
         if path.is_dir():
             return asyncio.run(engine.scan_directory(path, recursive=recursive))
         return [asyncio.run(engine.scan(path))]
@@ -332,9 +419,69 @@ def _resolve_policy_dir(policy_dir: Path) -> Path:
     return policy_dir
 
 
+def _load_file_config() -> dict:
+    """Load the nearest .guardrail.yaml config file, returning an empty dict if none found."""
+    config_path = find_config_file()
+    return EngineConfig.from_yaml(config_path) if config_path else {}
+
+
 def _normalize_name(value: str) -> str:
     """Strip non-alphanumeric characters and lowercase for fuzzy matching."""
     return "".join(ch for ch in value.lower() if ch.isalnum())
+
+
+_SEVERITY_ORDER = {"INFORMATIONAL": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+
+
+def _has_failures_at_threshold(results: list, threshold: str) -> bool:
+    """Return True if any FAIL finding meets or exceeds *threshold* severity."""
+    min_level = _SEVERITY_ORDER.get(threshold.upper(), 1)
+    return any(
+        _SEVERITY_ORDER.get(f.severity.upper(), 0) >= min_level
+        for r in results for res in r.resources for f in res.findings
+        if f.status == "FAIL"
+    )
+
+
+def _git_changed_files(base_path: Path, ref: str) -> set[Path]:
+    """Return IaC files changed between *ref* and HEAD, resolved relative to *base_path*."""
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", "--diff-filter=ACMR", ref],
+            capture_output=True, text=True, check=True,
+            cwd=str(base_path if base_path.is_dir() else base_path.parent),
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        console.print("[yellow]Warning:[/yellow] git diff failed; scanning all files.")
+        return set()
+
+    repo_root_result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True, check=True,
+        cwd=str(base_path if base_path.is_dir() else base_path.parent),
+    )
+    repo_root = Path(repo_root_result.stdout.strip())
+
+    iac_extensions = {".tf", ".json", ".yaml", ".yml"}
+    changed: set[Path] = set()
+    for line in result.stdout.strip().splitlines():
+        p = repo_root / line.strip()
+        if p.suffix.lower() in iac_extensions:
+            changed.add(p)
+    return changed
+
+
+def _git_head_sha(base_path: Path) -> str:
+    """Return the current HEAD commit SHA."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+            cwd=str(base_path if base_path.is_dir() else base_path.parent),
+        )
+        return result.stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return "unknown"
 
 
 if __name__ == "__main__":  # pragma: no cover

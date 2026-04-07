@@ -72,6 +72,26 @@ class ResourceNormalizer:
     # Fact dispatching
     # ------------------------------------------------------------------
 
+    # Maps resource types to fact-builder method names.  Methods that accept
+    # ``resources_in_file`` are marked with True; the rest only take the
+    # single resource.
+    _FACT_BUILDERS: dict[str, tuple[str, bool]] = {
+        rt: entry
+        for rtypes, entry in [
+            (("aws_s3_bucket", "AWS::S3::Bucket"), ("_s3_bucket_facts", True)),
+            (("aws_s3_bucket_public_access_block", "AWS::S3::BucketPublicAccessBlock"), ("_s3_public_access_block_facts", False)),
+            (("aws_db_instance", "AWS::RDS::DBInstance"), ("_rds_instance_facts", False)),
+            (("aws_security_group", "AWS::EC2::SecurityGroup"), ("_security_group_facts", False)),
+            (("aws_iam_account_password_policy", "AWS::IAM::AccountPasswordPolicy"), ("_password_policy_facts", False)),
+            (("Pod", "Deployment", "StatefulSet", "DaemonSet", "Job"), ("_kubernetes_workload_facts", False)),
+            (("aws_cloudtrail", "AWS::CloudTrail::Trail"), ("_cloudtrail_facts", False)),
+            (("aws_ebs_volume", "AWS::EC2::Volume"), ("_ebs_volume_facts", False)),
+            (("aws_dynamodb_table", "AWS::DynamoDB::Table"), ("_dynamodb_table_facts", False)),
+            (("aws_flow_log", "AWS::EC2::FlowLog"), ("_flow_log_facts", False)),
+        ]
+        for rt in rtypes
+    }
+
     def _build_facts(self, resource: ResourceBlock, resources_in_file: list[ResourceBlock]) -> dict[str, Any]:
         """Dispatch to the correct fact-builder based on resource type."""
         facts: dict[str, Any] = {
@@ -80,19 +100,11 @@ class ResourceNormalizer:
             "line_number": resource.line_number,
         }
 
-        rt = resource.resource_type
-        if rt in {"aws_s3_bucket", "AWS::S3::Bucket"}:
-            facts.update(self._s3_bucket_facts(resource, resources_in_file))
-        elif rt in {"aws_s3_bucket_public_access_block", "AWS::S3::BucketPublicAccessBlock"}:
-            facts.update(self._s3_public_access_block_facts(resource))
-        elif rt in {"aws_db_instance", "AWS::RDS::DBInstance"}:
-            facts.update(self._rds_instance_facts(resource))
-        elif rt in {"aws_security_group", "AWS::EC2::SecurityGroup"}:
-            facts.update(self._security_group_facts(resource))
-        elif rt in {"aws_iam_account_password_policy", "AWS::IAM::AccountPasswordPolicy"}:
-            facts.update(self._password_policy_facts(resource))
-        elif rt in {"Pod", "Deployment"}:
-            facts.update(self._kubernetes_workload_facts(resource))
+        entry = self._FACT_BUILDERS.get(resource.resource_type)
+        if entry:
+            method_name, needs_siblings = entry
+            method = getattr(self, method_name)
+            facts.update(method(resource, resources_in_file) if needs_siblings else method(resource))
         else:
             facts["properties"] = resource.properties
 
@@ -156,12 +168,13 @@ class ResourceNormalizer:
         }
 
     def _rds_instance_facts(self, resource: ResourceBlock) -> dict[str, Any]:
-        """Extract RDS encryption, engine, and accessibility facts."""
+        """Extract RDS encryption, engine, backup, and accessibility facts."""
         return {
             "engine": self._prop(resource, "engine", "Engine"),
             "instance_class": self._prop(resource, "instance_class", "DBInstanceClass"),
             "storage_encrypted": self._bool_value(self._prop(resource, "storage_encrypted", "StorageEncrypted")),
             "kms_key_configured": bool(self._prop(resource, "kms_key_id", "KmsKeyId")),
+            "backup_retention_period": self._int_value(self._prop(resource, "backup_retention_period", "BackupRetentionPeriod")),
             "publicly_accessible": self._bool_value(self._prop(resource, "publicly_accessible", "PubliclyAccessible")),
             "properties": resource.properties,
         }
@@ -212,8 +225,55 @@ class ResourceNormalizer:
             "properties": resource.properties,
         }
 
+    def _cloudtrail_facts(self, resource: ResourceBlock) -> dict[str, Any]:
+        """Extract CloudTrail logging configuration facts."""
+        return {
+            "is_logging": self._bool_value(self._prop(resource, "enable_logging", "IsLogging")) is not False,
+            "is_multi_region": self._bool_value(self._prop(resource, "is_multi_region_trail", "IsMultiRegionTrail")) is True,
+            "log_file_validation": self._bool_value(self._prop(resource, "enable_log_file_validation", "EnableLogFileValidation")) is True,
+            "s3_bucket_name": self._prop(resource, "s3_bucket_name", "S3BucketName"),
+            "properties": resource.properties,
+        }
+
+    def _ebs_volume_facts(self, resource: ResourceBlock) -> dict[str, Any]:
+        """Extract EBS volume encryption facts."""
+        return {
+            "encrypted": self._bool_value(self._prop(resource, "encrypted", "Encrypted")) is True,
+            "kms_key_configured": bool(self._prop(resource, "kms_key_id", "KmsKeyId")),
+            "volume_type": self._prop(resource, "type", "VolumeType"),
+            "properties": resource.properties,
+        }
+
+    def _dynamodb_table_facts(self, resource: ResourceBlock) -> dict[str, Any]:
+        """Extract DynamoDB table encryption facts."""
+        is_cfn = self._is_cfn(resource)
+        sse = self._prop(resource, "server_side_encryption", "SSESpecification") or {}
+        # Terraform heuristic parser wraps nested blocks in a list.
+        if isinstance(sse, list):
+            sse = sse[0] if sse else {}
+        sse_dict = sse if isinstance(sse, dict) else {}
+        enabled_key = "SSEEnabled" if is_cfn else "enabled"
+        kms_key = "KMSMasterKeyId" if is_cfn else "kms_key_arn"
+        return {
+            "sse_enabled": self._bool_value(sse_dict.get(enabled_key)) is True,
+            "kms_key_configured": bool(sse_dict.get(kms_key)),
+            "properties": resource.properties,
+        }
+
+    def _flow_log_facts(self, resource: ResourceBlock) -> dict[str, Any]:
+        """Extract VPC flow log configuration facts."""
+        return {
+            "traffic_type": self._prop(resource, "traffic_type", "TrafficType"),
+            "log_destination": (
+                self._prop(resource, "log_destination", "LogDestination")
+                or self._prop(resource, "log_group_name", "LogGroupName")
+            ),
+            "vpc_id": self._prop(resource, "vpc_id", "ResourceId"),
+            "properties": resource.properties,
+        }
+
     def _kubernetes_workload_facts(self, resource: ResourceBlock) -> dict[str, Any]:
-        """Extract container count, privilege escalation, and service account facts."""
+        """Extract container count, privilege escalation, host namespaces, limits, and probe facts."""
         spec = self._safe_dict(resource.properties, "spec")
         template_spec = self._safe_dict(self._safe_dict(spec, "template"), "spec")
         pod_spec = template_spec or spec
@@ -223,6 +283,13 @@ class ResourceNormalizer:
             "run_as_non_root": self._extract_security_value(pod_spec, containers, "runAsNonRoot"),
             "privileged": self._extract_any_container_security_value(containers, "privileged"),
             "service_account_name": pod_spec.get("serviceAccountName"),
+            "host_network": bool(pod_spec.get("hostNetwork")),
+            "host_pid": bool(pod_spec.get("hostPID")),
+            "host_ipc": bool(pod_spec.get("hostIPC")),
+            "all_containers_have_resource_limits": self._all_have_resource_limits(containers),
+            "containers_missing_limits": self._containers_missing_field(containers, "resources", "limits"),
+            "all_containers_have_probes": self._all_have_probes(containers),
+            "containers_missing_probes": self._containers_missing_probes(containers),
             "properties": resource.properties,
         }
 
@@ -302,6 +369,42 @@ class ResourceNormalizer:
             if key in security:
                 return security[key]
         return None
+
+    @staticmethod
+    def _all_have_resource_limits(containers: list[dict[str, Any]]) -> bool:
+        """True only if every container has resources.limits.cpu AND resources.limits.memory."""
+        if not containers:
+            return False
+        for c in containers:
+            limits = (c.get("resources") or {}).get("limits") or {}
+            if not limits.get("cpu") or not limits.get("memory"):
+                return False
+        return True
+
+    @staticmethod
+    def _containers_missing_field(containers: list[dict[str, Any]], parent_key: str, child_key: str) -> list[str]:
+        """Return names of containers missing a nested field."""
+        missing: list[str] = []
+        for c in containers:
+            parent = c.get(parent_key) or {}
+            if not parent.get(child_key):
+                missing.append(c.get("name", "unnamed"))
+        return missing
+
+    @staticmethod
+    def _all_have_probes(containers: list[dict[str, Any]]) -> bool:
+        """True only if every container has both livenessProbe and readinessProbe."""
+        if not containers:
+            return False
+        return all(c.get("livenessProbe") and c.get("readinessProbe") for c in containers)
+
+    @staticmethod
+    def _containers_missing_probes(containers: list[dict[str, Any]]) -> list[str]:
+        """Return names of containers missing liveness or readiness probes."""
+        return [
+            c.get("name", "unnamed") for c in containers
+            if not c.get("livenessProbe") or not c.get("readinessProbe")
+        ]
 
     # ------------------------------------------------------------------
     # Type coercion utilities

@@ -1,0 +1,71 @@
+name: k8s-security
+version: "0.1.0"
+framework: Kubernetes Security
+description: >-
+  Security baseline for Kubernetes workloads covering privileged mode,
+  root execution, resource limits, host namespace isolation, and health probes.
+rules:
+  - id: K8S-SEC-001
+    title: No privileged containers
+    description: Containers must not run in privileged mode.
+    severity: CRITICAL
+    resource_types:
+      - Pod
+      - Deployment
+      - StatefulSet
+      - DaemonSet
+      - Job
+    constraint: Containers MUST NOT run in privileged mode.
+    remediation: Set securityContext.privileged to false for all containers.
+
+  - id: K8S-SEC-002
+    title: Containers must not run as root
+    description: Pod or container securityContext must enforce non-root execution.
+    severity: HIGH
+    resource_types:
+      - Pod
+      - Deployment
+      - StatefulSet
+      - DaemonSet
+      - Job
+    constraint: Pod or container securityContext MUST set runAsNonRoot to true.
+    remediation: Add securityContext.runAsNonRoot = true at pod or container level.
+
+  - id: K8S-SEC-003
+    title: Resource limits required
+    description: All containers must define CPU and memory resource limits.
+    severity: MEDIUM
+    resource_types:
+      - Pod
+      - Deployment
+      - StatefulSet
+      - DaemonSet
+      - Job
+    constraint: All containers MUST define resources.limits for cpu and memory.
+    remediation: Add resources.limits.cpu and resources.limits.memory to each container.
+
+  - id: K8S-SEC-004
+    title: No host namespace sharing
+    description: Pods must not use hostNetwork, hostPID, or hostIPC.
+    severity: CRITICAL
+    resource_types:
+      - Pod
+      - Deployment
+      - StatefulSet
+      - DaemonSet
+      - Job
+    constraint: Pods MUST NOT use hostNetwork, hostPID, or hostIPC.
+    remediation: Remove hostNetwork, hostPID, hostIPC or set them to false.
+
+  - id: K8S-SEC-005
+    title: Liveness and readiness probes required
+    description: All containers must define health check probes.
+    severity: MEDIUM
+    resource_types:
+      - Pod
+      - Deployment
+      - StatefulSet
+      - DaemonSet
+      - Job
+    constraint: All containers MUST define livenessProbe and readinessProbe.
+    remediation: Add livenessProbe and readinessProbe to each container spec.
