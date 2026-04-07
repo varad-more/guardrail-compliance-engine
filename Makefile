@@ -17,5 +17,14 @@ coverage:
 scan-example:
 	guardrail scan examples/terraform/noncompliant-s3.tf --policy soc2-basic --no-bedrock
 
+scan-all:
+	guardrail scan examples/ --no-bedrock --policy soc2-basic --policy cis-aws-foundations --policy k8s-security
+
+scan-k8s:
+	guardrail scan examples/kubernetes/ --policy k8s-security --no-bedrock
+
+diff-example:
+	guardrail diff . --ref HEAD~1 --policy soc2-basic --no-bedrock
+
 smoke-bedrock:
 	python scripts/bedrock_smoke.py

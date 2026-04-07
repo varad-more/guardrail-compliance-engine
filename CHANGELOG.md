@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.0 — 2026-04-06
+
+### Added
+
+- **Kubernetes security rules** -- 5 new rules (K8S-SEC-001–005): privileged containers, non-root enforcement, resource limits, host namespace sharing, health probes
+- **Extended AWS resource coverage** -- CloudTrail logging, EBS encryption, DynamoDB encryption, VPC flow logs (4 new fact builders + checkers)
+- **Auto-remediation snippets** -- FAIL findings now include copy-paste Terraform/CloudFormation/K8s fix code in console output and SARIF fixes
+- **Config file auto-loading** -- `.guardrail.yaml` auto-discovered from project root; CLI args override
+- **`guardrail diff` command** -- scan only files changed vs a git ref; `--format github` posts summary + inline comments to a GitHub PR
+- **Inline suppression** -- `# guardrail:ignore RULE-ID` comments suppress specific rules per resource
+- **Severity thresholds** -- `--severity-threshold HIGH` exits non-zero only for HIGH+ failures
+- **Diff-aware scanning** -- `--changed-only REF` on the scan command limits scope to changed files
+
+### Changed
+
+- Replaced keyword-based rule routing (`_GENERIC_ROUTES`) with explicit `_RULE_DISPATCH` dict (31 entries)
+- Replaced if/elif fact-builder dispatch with `_FACT_BUILDERS` class-level dict
+- Expanded SOC 2 policy from 5 to 8 rules, CIS AWS Foundations from 5 to 8 rules
+- Added `k8s-security` policy pack (5 rules)
+- Test suite expanded from 26 to 82 tests
+
 ## 0.1.0 — 2026-03-25
 
 Initial public release.

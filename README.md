@@ -21,13 +21,20 @@ Results come out as a **color-coded console tree**, **JSON**, **SARIF** (GitHub 
 ## Features
 
 - **Three IaC formats** — Terraform (`.tf` + plan JSON), CloudFormation (YAML/JSON), Kubernetes manifests
-- **Local deterministic checks** — no AWS needed; runs offline in CI for S3, RDS, security groups, and IAM password policy
+- **31 local deterministic checks** — no AWS needed; runs offline in CI for S3, RDS, EBS, DynamoDB, CloudTrail, VPC flow logs, security groups, IAM password policy, and Kubernetes workloads
 - **Bedrock Guardrails integration** — send normalized resources to `ApplyGuardrail` for Automated Reasoning
+- **Kubernetes security rules** — privileged containers, non-root enforcement, resource limits, host namespace sharing, health probes
+- **Auto-remediation snippets** — FAIL findings include copy-paste Terraform/CloudFormation/K8s fix code
+- **Inline suppression** — `# guardrail:ignore RULE-ID` comments to suppress specific rules per resource
+- **Config file auto-loading** — `.guardrail.yaml` auto-discovered from project root; CLI args override
+- **Diff-aware scanning** — `guardrail diff --ref main` scans only changed files
+- **GitHub PR integration** — `guardrail diff --format github --repo owner/repo --pr 123` posts inline review comments
+- **Severity thresholds** — `--severity-threshold HIGH` exits non-zero only for HIGH+ failures
 - **Retry + timeout** — Bedrock calls retry up to 3× with exponential back-off; configurable per-call timeout
 - **Secret redaction** — detects AWS keys, private keys, passwords, and tokens in IaC before they reach Bedrock
 - **Visual HTML report** — compliance score donut, severity bar chart, top failing rules leaderboard, per-file table
 - **Rich console dashboard** — per-file summary table, severity chart, and top rules panel alongside the tree output
-- **Declarative YAML policies** — add rules without touching Python; built-in packs for SOC 2, CIS AWS, PCI-DSS, HIPAA
+- **Declarative YAML policies** — add rules without touching Python; built-in packs for SOC 2, CIS AWS, PCI-DSS, HIPAA, and K8s Security
 - **Full AR lifecycle CLI** — create, build, version, and export Automated Reasoning policies from the terminal
 - **CI-ready** — GitHub Actions workflows for tests, coverage, linting, and SARIF uploads
 
@@ -51,7 +58,7 @@ uv pip install -e '.[dev]'
 ### 2. Verify
 
 ```bash
-pytest           # all 26 tests should pass
+pytest           # all 82 tests should pass
 guardrail --help # explore available commands
 ```
 
@@ -208,10 +215,11 @@ The repo includes two GitHub Actions workflows:
 
 | Policy | Framework | Rules |
 |---|---|---|
-| `soc2-basic` | SOC 2 Type II | 5 |
-| `cis-aws-foundations` | CIS AWS Foundations | 5 |
+| `soc2-basic` | SOC 2 Type II | 8 |
+| `cis-aws-foundations` | CIS AWS Foundations | 8 |
 | `pci-dss-basic` | PCI DSS | 5 |
 | `hipaa-basic` | HIPAA | 5 |
+| `k8s-security` | Kubernetes Security | 5 |
 | `custom-example` | Custom | 1 |
 
 ```bash
@@ -417,11 +425,14 @@ src/guardrail_compliance/
     kubernetes.py         # Multi-document YAML manifests
   policies/
     registry.py           # YAML loading, validation, and rule matching
+  remediation/
+    snippets.py           # Registry of copy-paste fix snippets per checker
   reporting/
     console.py            # Rich tree + dashboard (summary, severity, top rules)
     json_report.py        # JSON serialization
     sarif.py              # SARIF 2.1.0 format
     html_report.py        # Self-contained HTML with SVG charts
+    github_pr.py          # GitHub PR summary + inline review comments
   utils/
     config.py             # EngineConfig dataclass
     exceptions.py         # GuardrailComplianceError hierarchy
@@ -445,8 +456,18 @@ Rather than sending raw HCL or YAML to Bedrock, the engine extracts structured f
 | S3 access logging | `aws_s3_bucket`, `AWS::S3::Bucket` |
 | S3 public access posture | `aws_s3_bucket`, `aws_s3_bucket_public_access_block` |
 | RDS encryption with KMS | `aws_db_instance`, `AWS::RDS::DBInstance` |
+| RDS backup retention | `aws_db_instance`, `AWS::RDS::DBInstance` |
 | Security group ingress | `aws_security_group`, `AWS::EC2::SecurityGroup` |
 | IAM password policy | `aws_iam_account_password_policy` |
+| CloudTrail logging | `aws_cloudtrail`, `AWS::CloudTrail::Trail` |
+| EBS encryption | `aws_ebs_volume`, `AWS::EC2::Volume` |
+| DynamoDB encryption | `aws_dynamodb_table`, `AWS::DynamoDB::Table` |
+| VPC flow logs | `aws_flow_log`, `AWS::EC2::FlowLog` |
+| K8s privileged containers | `Pod`, `Deployment`, `StatefulSet`, `DaemonSet`, `Job` |
+| K8s run as non-root | `Pod`, `Deployment`, `StatefulSet`, `DaemonSet`, `Job` |
+| K8s resource limits | `Pod`, `Deployment`, `StatefulSet`, `DaemonSet`, `Job` |
+| K8s host namespace sharing | `Pod`, `Deployment`, `StatefulSet`, `DaemonSet`, `Job` |
+| K8s health probes | `Pod`, `Deployment`, `StatefulSet`, `DaemonSet`, `Job` |
 
 ### Parser coverage
 
@@ -483,7 +504,7 @@ make smoke-bedrock # verify AWS credentials and Bedrock access
 
 1. Add the rule to a YAML policy file under `policies/`
 2. Add a `_check_*` method to `engine.py`
-3. Register it in `_RULE_DISPATCH` (by exact rule ID) or `_GENERIC_ROUTES` (by keyword)
+3. Register it in `_RULE_DISPATCH` (by exact rule ID)
 4. Extend `normalization.py` if the check needs new facts
 5. Add a test
 
@@ -498,10 +519,9 @@ make smoke-bedrock # verify AWS credentials and Bedrock access
 
 ## Known Limitations
 
-- Not every rule has a dedicated local evaluator — some fall back to keyword routing
-- Kubernetes manifests are parsed but the built-in policy packs focus on AWS resources
 - Cross-file Terraform module correlation is basic
 - Automated Reasoning quality depends on the source material provided to Bedrock
+- GitHub PR integration requires a `GITHUB_TOKEN` with repo/PR write access
 
 ---
 
